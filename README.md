@@ -1,6 +1,6 @@
 # ViewMD
 
-A lightweight GTK 3 markdown viewer for desktop Linux. It is ideal as your default app for opening `.md` files. Uses the excellent library from https://github.com/mity/md4c for markdown parsing.
+A lightweight GTK 3 markdown viewer for desktop Linux. It is ideal as your default app for opening `.md` files. Uses the excellent library [md4c](https://github.com/mity/md4c) for markdown parsing. This project is sort of a companion app/fork of my other markdown project [TrayMD](https://github.com/rabfulton/TrayMD). 
 
 ![ViewMD](assets/screenshot.png)
 
@@ -36,7 +36,7 @@ Code blocks currently support a beta version of keyword highlighting for fenced 
 
 ### Arch Linux (AUR)
 
-- https://aur.archlinux.org/packages/viewmd
+https://aur.archlinux.org/packages/viewmd
 
 ### Debian/Ubuntu (.deb)
 

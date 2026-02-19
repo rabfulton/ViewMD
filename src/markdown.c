@@ -51,6 +51,12 @@ typedef struct {
 } ViewmdTable;
 
 typedef struct {
+  gint start_offset;
+  gint end_offset;
+  const MarkydLanguageHighlight *language;
+} CodeBlockRange;
+
+typedef struct {
   GtkTextBuffer *buffer;
   GtkTextIter iter;
   GPtrArray *active_tags; /* GtkTextTag* */
@@ -68,6 +74,9 @@ typedef struct {
   ViewmdTableRow *table_current_row;
   GString *table_cell_text;
   guint table_current_col;
+  GArray *code_blocks; /* CodeBlockRange */
+  gint current_code_start_offset;
+  const MarkydLanguageHighlight *current_code_language;
   gboolean has_output;
   guint trailing_newlines;
 } RenderCtx;
@@ -116,6 +125,139 @@ static GtkTextTag *lookup_tag(GtkTextBuffer *buffer, const gchar *name) {
   }
   table = gtk_text_buffer_get_tag_table(buffer);
   return table ? gtk_text_tag_table_lookup(table, name) : NULL;
+}
+
+static gboolean line_is_blank(const gchar *line, gsize len) {
+  for (gsize i = 0; i < len; i++) {
+    gchar ch = line[i];
+    if (ch == '\r') {
+      continue;
+    }
+    if (ch != ' ' && ch != '\t') {
+      return FALSE;
+    }
+  }
+  return TRUE;
+}
+
+static gboolean line_is_dash_rule(const gchar *line, gsize len) {
+  gsize i = 0;
+  guint dashes = 0;
+
+  while (i < len && (line[i] == ' ' || line[i] == '\t')) {
+    i++;
+  }
+
+  for (; i < len; i++) {
+    gchar ch = line[i];
+    if (ch == '\r') {
+      continue;
+    }
+    if (ch == '-') {
+      dashes++;
+      continue;
+    }
+    if (ch == ' ' || ch == '\t') {
+      continue;
+    }
+    return FALSE;
+  }
+
+  return dashes >= 3;
+}
+
+static gboolean line_is_fence(const gchar *line, gsize len, gchar *fence_ch,
+                              guint *fence_len) {
+  gsize i = 0;
+  gchar ch;
+  guint run = 0;
+
+  while (i < len && (line[i] == ' ' || line[i] == '\t')) {
+    i++;
+  }
+  if (i >= len) {
+    return FALSE;
+  }
+
+  ch = line[i];
+  if (ch != '`' && ch != '~') {
+    return FALSE;
+  }
+
+  while (i < len && line[i] == ch) {
+    run++;
+    i++;
+  }
+
+  if (run < 3) {
+    return FALSE;
+  }
+
+  if (fence_ch) {
+    *fence_ch = ch;
+  }
+  if (fence_len) {
+    *fence_len = run;
+  }
+  return TRUE;
+}
+
+static gchar *normalize_markdown_source(const gchar *source) {
+  const gchar *p;
+  GString *out;
+  gboolean prev_nonblank = FALSE;
+  gboolean in_fence = FALSE;
+  gchar active_fence_ch = 0;
+  guint active_fence_len = 0;
+
+  if (!source || source[0] == '\0') {
+    return g_strdup("");
+  }
+
+  out = g_string_new(NULL);
+  p = source;
+
+  while (*p != '\0') {
+    const gchar *line_start = p;
+    const gchar *line_end = strchr(p, '\n');
+    gsize line_len = line_end ? (gsize)(line_end - line_start)
+                              : strlen(line_start);
+    gboolean has_nl = (line_end != NULL);
+    gboolean is_blank = line_is_blank(line_start, line_len);
+    gboolean is_rule = FALSE;
+    gchar fence_ch = 0;
+    guint fence_len = 0;
+
+    if (line_is_fence(line_start, line_len, &fence_ch, &fence_len)) {
+      if (!in_fence) {
+        in_fence = TRUE;
+        active_fence_ch = fence_ch;
+        active_fence_len = fence_len;
+      } else if (fence_ch == active_fence_ch && fence_len >= active_fence_len) {
+        in_fence = FALSE;
+      }
+    }
+
+    if (!in_fence) {
+      is_rule = line_is_dash_rule(line_start, line_len);
+    }
+
+    if (is_rule && prev_nonblank) {
+      g_string_append_c(out, '\n');
+    }
+
+    g_string_append_len(out, line_start, line_len);
+    if (has_nl) {
+      g_string_append_c(out, '\n');
+      p = line_end + 1;
+    } else {
+      p = line_start + line_len;
+    }
+
+    prev_nonblank = !is_blank;
+  }
+
+  return g_string_free(out, FALSE);
 }
 
 static void update_newline_state(RenderCtx *ctx, const gchar *text, gsize len) {
@@ -227,6 +369,115 @@ static gchar *attr_to_string(const MD_ATTRIBUTE *attr) {
   return g_strndup(attr->text, attr->size);
 }
 
+static gchar *extract_code_language_from_detail(MD_BLOCK_CODE_DETAIL *code) {
+  gchar *lang;
+  gchar *info;
+  gchar *trimmed;
+  const gchar *end;
+
+  if (!code) {
+    return NULL;
+  }
+
+  lang = attr_to_string(&code->lang);
+  g_strstrip(lang);
+  if (lang[0] != '\0') {
+    return lang;
+  }
+  g_free(lang);
+
+  info = attr_to_string(&code->info);
+  trimmed = g_strstrip(info);
+  if (trimmed[0] == '\0') {
+    g_free(info);
+    return NULL;
+  }
+
+  end = trimmed;
+  while (*end && !g_ascii_isspace(*end)) {
+    end++;
+  }
+
+  lang = g_strndup(trimmed, (gsize)(end - trimmed));
+  g_free(info);
+  return lang;
+}
+
+typedef struct {
+  GtkTextBuffer *buffer;
+  gint line_offset;
+} CodeTagApplyContext;
+
+static void on_code_scan_token(gint start_char_offset, gint end_char_offset,
+                               const gchar *tag_name, gpointer user_data) {
+  CodeTagApplyContext *ctx = (CodeTagApplyContext *)user_data;
+
+  if (!ctx || !ctx->buffer || !tag_name || end_char_offset <= start_char_offset) {
+    return;
+  }
+
+  apply_tag_by_name_offsets(ctx->buffer, tag_name, ctx->line_offset + start_char_offset,
+                            ctx->line_offset + end_char_offset);
+}
+
+static void apply_code_highlighting_for_block(GtkTextBuffer *buffer,
+                                              const CodeBlockRange *range) {
+  GtkTextIter start;
+  GtkTextIter end;
+  gchar *text;
+  const gchar *line_start;
+  MarkydCodeScanState state = {0};
+  CodeTagApplyContext ctx = {0};
+  gint line_offset;
+
+  if (!buffer || !range || !range->language || range->end_offset <= range->start_offset) {
+    return;
+  }
+
+  gtk_text_buffer_get_iter_at_offset(buffer, &start, range->start_offset);
+  gtk_text_buffer_get_iter_at_offset(buffer, &end, range->end_offset);
+  text = gtk_text_buffer_get_text(buffer, &start, &end, FALSE);
+  if (!text) {
+    return;
+  }
+
+  markyd_code_scan_state_reset(&state);
+  ctx.buffer = buffer;
+  line_offset = range->start_offset;
+  line_start = text;
+
+  while (TRUE) {
+    const gchar *nl = strchr(line_start, '\n');
+    gsize len = nl ? (gsize)(nl - line_start) : strlen(line_start);
+    gchar *line = g_strndup(line_start, len);
+
+    ctx.line_offset = line_offset;
+    markyd_code_scan_line(range->language, line, &state, on_code_scan_token, &ctx);
+    line_offset += (gint)g_utf8_strlen(line, -1);
+    g_free(line);
+
+    if (!nl) {
+      break;
+    }
+
+    line_offset += 1; /* '\n' */
+    line_start = nl + 1;
+  }
+
+  g_free(text);
+}
+
+static void apply_code_highlighting(GtkTextBuffer *buffer, GArray *code_blocks) {
+  if (!buffer || !code_blocks || code_blocks->len == 0) {
+    return;
+  }
+
+  for (guint i = 0; i < code_blocks->len; i++) {
+    CodeBlockRange *range = &g_array_index(code_blocks, CodeBlockRange, i);
+    apply_code_highlighting_for_block(buffer, range);
+  }
+}
+
 static gchar *md_text_to_utf8(MD_TEXTTYPE type, const MD_CHAR *text,
                               MD_SIZE size) {
   if (type == MD_TEXT_NULLCHAR) {
@@ -333,7 +584,61 @@ static void table_capture_append(RenderCtx *ctx, const gchar *text) {
   if (!ctx || !ctx->table_cell_text || !text) {
     return;
   }
-  g_string_append(ctx->table_cell_text, text);
+  gchar *escaped = g_markup_escape_text(text, -1);
+  g_string_append(ctx->table_cell_text, escaped);
+  g_free(escaped);
+}
+
+static void table_capture_span_enter(RenderCtx *ctx, MD_SPANTYPE type) {
+  if (!ctx || !ctx->table_cell_text) {
+    return;
+  }
+
+  switch (type) {
+  case MD_SPAN_EM:
+    g_string_append(ctx->table_cell_text, "<i>");
+    break;
+  case MD_SPAN_STRONG:
+    g_string_append(ctx->table_cell_text, "<b>");
+    break;
+  case MD_SPAN_CODE:
+    g_string_append(ctx->table_cell_text, "<span font_family='monospace'>");
+    break;
+  case MD_SPAN_DEL:
+    g_string_append(ctx->table_cell_text, "<s>");
+    break;
+  case MD_SPAN_A:
+    g_string_append(ctx->table_cell_text, "<u>");
+    break;
+  default:
+    break;
+  }
+}
+
+static void table_capture_span_leave(RenderCtx *ctx, MD_SPANTYPE type) {
+  if (!ctx || !ctx->table_cell_text) {
+    return;
+  }
+
+  switch (type) {
+  case MD_SPAN_EM:
+    g_string_append(ctx->table_cell_text, "</i>");
+    break;
+  case MD_SPAN_STRONG:
+    g_string_append(ctx->table_cell_text, "</b>");
+    break;
+  case MD_SPAN_CODE:
+    g_string_append(ctx->table_cell_text, "</span>");
+    break;
+  case MD_SPAN_DEL:
+    g_string_append(ctx->table_cell_text, "</s>");
+    break;
+  case MD_SPAN_A:
+    g_string_append(ctx->table_cell_text, "</u>");
+    break;
+  default:
+    break;
+  }
 }
 
 static void table_start_row(RenderCtx *ctx) {
@@ -542,6 +847,13 @@ static int on_enter_block(MD_BLOCKTYPE type, void *detail, void *userdata) {
   }
 
   case MD_BLOCK_CODE:
+    ctx->current_code_start_offset = gtk_text_iter_get_offset(&ctx->iter);
+    {
+      gchar *language =
+          extract_code_language_from_detail((MD_BLOCK_CODE_DETAIL *)detail);
+      ctx->current_code_language = markyd_code_lookup_language(language);
+      g_free(language);
+    }
     ensure_newlines(ctx, 2);
     push_active_tag_by_name(ctx, TAG_CODE_BLOCK,
                             &g_array_index(ctx->block_stack, BlockState,
@@ -605,6 +917,17 @@ static int on_leave_block(MD_BLOCKTYPE type, void *detail, void *userdata) {
   } else if (type == MD_BLOCK_LI) {
     ctx->list_item_prefix_pending = FALSE;
     ensure_newlines(ctx, 1);
+  } else if (type == MD_BLOCK_CODE) {
+    if (ctx->code_blocks && ctx->current_code_start_offset >= 0) {
+      CodeBlockRange range = {ctx->current_code_start_offset,
+                              gtk_text_iter_get_offset(&ctx->iter),
+                              ctx->current_code_language};
+      if (range.end_offset > range.start_offset) {
+        g_array_append_val(ctx->code_blocks, range);
+      }
+    }
+    ctx->current_code_start_offset = -1;
+    ctx->current_code_language = NULL;
   } else if (type == MD_BLOCK_TH || type == MD_BLOCK_TD) {
     table_finish_cell(ctx);
   } else if (type == MD_BLOCK_TR) {
@@ -628,8 +951,14 @@ static int on_leave_block(MD_BLOCKTYPE type, void *detail, void *userdata) {
 static int on_enter_span(MD_SPANTYPE type, void *detail, void *userdata) {
   RenderCtx *ctx = (RenderCtx *)userdata;
   SpanState state = {type, 0};
+  gboolean capture_cell = (ctx && ctx->table_cell_text);
 
   g_array_append_val(ctx->span_stack, state);
+
+  if (capture_cell) {
+    table_capture_span_enter(ctx, type);
+    return 0;
+  }
 
   switch (type) {
   case MD_SPAN_EM:
@@ -685,15 +1014,19 @@ static int on_enter_span(MD_SPANTYPE type, void *detail, void *userdata) {
 
 static int on_leave_span(MD_SPANTYPE type, void *detail, void *userdata) {
   RenderCtx *ctx = (RenderCtx *)userdata;
-  (void)type;
   (void)detail;
 
   if (ctx->span_stack->len > 0) {
     SpanState state =
         g_array_index(ctx->span_stack, SpanState, ctx->span_stack->len - 1);
+    if (ctx->table_cell_text) {
+      table_capture_span_leave(ctx, state.type);
+    }
     pop_active_tags(ctx, state.pushed_tags);
     g_array_set_size(ctx->span_stack, ctx->span_stack->len - 1);
   }
+
+  (void)type;
 
   return 0;
 }
@@ -924,11 +1257,11 @@ GtkWidget *markdown_create_table_widget(GtkTextChildAnchor *anchor) {
       gtk_widget_set_margin_bottom(label, row->is_header ? 6 : 5);
 
       if (row->is_header) {
-        markup = g_markup_printf_escaped("<b>%s</b>", text);
+        markup = g_strdup_printf("<b>%s</b>", text);
         gtk_label_set_markup(GTK_LABEL(label), markup);
         g_free(markup);
       } else {
-        gtk_label_set_text(GTK_LABEL(label), text);
+        gtk_label_set_markup(GTK_LABEL(label), text);
       }
 
       gtk_grid_attach(GTK_GRID(grid), cell, (gint)c, (gint)r, 1, 1);
@@ -941,6 +1274,8 @@ GtkWidget *markdown_create_table_widget(GtkTextChildAnchor *anchor) {
 void markdown_apply_tags(GtkTextBuffer *buffer, const gchar *source) {
   RenderCtx ctx;
   MD_PARSER parser = {0};
+  gchar *normalized_source;
+  const gchar *input;
   gint rc;
 
   if (!buffer) {
@@ -948,6 +1283,8 @@ void markdown_apply_tags(GtkTextBuffer *buffer, const gchar *source) {
   }
 
   gtk_text_buffer_set_text(buffer, "", -1);
+  input = source ? source : "";
+  normalized_source = normalize_markdown_source(input);
 
   memset(&ctx, 0, sizeof(ctx));
   ctx.buffer = buffer;
@@ -955,7 +1292,10 @@ void markdown_apply_tags(GtkTextBuffer *buffer, const gchar *source) {
   ctx.block_stack = g_array_new(FALSE, FALSE, sizeof(BlockState));
   ctx.span_stack = g_array_new(FALSE, FALSE, sizeof(SpanState));
   ctx.list_stack = g_array_new(FALSE, FALSE, sizeof(ListState));
+  ctx.code_blocks = g_array_new(FALSE, FALSE, sizeof(CodeBlockRange));
   ctx.anchor_counts = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+  ctx.current_code_start_offset = -1;
+  ctx.current_code_language = NULL;
   ctx.heading_start_offset = 0;
   ctx.has_output = FALSE;
   ctx.trailing_newlines = 0;
@@ -971,10 +1311,12 @@ void markdown_apply_tags(GtkTextBuffer *buffer, const gchar *source) {
   parser.debug_log = NULL;
   parser.syntax = NULL;
 
-  rc = md_parse((source ? source : ""), (MD_SIZE)strlen(source ? source : ""),
-                &parser, &ctx);
+  rc = md_parse(normalized_source, (MD_SIZE)strlen(normalized_source), &parser,
+                &ctx);
   if (rc != 0) {
-    gtk_text_buffer_set_text(buffer, source ? source : "", -1);
+    gtk_text_buffer_set_text(buffer, input, -1);
+  } else {
+    apply_code_highlighting(buffer, ctx.code_blocks);
   }
 
   if (ctx.table_cell_text) {
@@ -988,7 +1330,9 @@ void markdown_apply_tags(GtkTextBuffer *buffer, const gchar *source) {
   }
   g_hash_table_destroy(ctx.anchor_counts);
   g_array_free(ctx.list_stack, TRUE);
+  g_array_free(ctx.code_blocks, TRUE);
   g_array_free(ctx.span_stack, TRUE);
   g_array_free(ctx.block_stack, TRUE);
   g_ptr_array_free(ctx.active_tags, TRUE);
+  g_free(normalized_source);
 }

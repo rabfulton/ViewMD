@@ -21,6 +21,7 @@ MarkydApp *markyd_app_new(void) {
 #else
       G_APPLICATION_FLAGS_NONE;
 #endif
+  flags = (GApplicationFlags)(flags | G_APPLICATION_NON_UNIQUE);
 
   self->gtk_app = gtk_application_new("org.viewmd.app", flags);
   self->current_file_path = NULL;

@@ -5,6 +5,7 @@
 #include "markdown.h"
 
 static void on_open_clicked(GtkButton *button, gpointer user_data);
+static void on_refresh_clicked(GtkButton *button, gpointer user_data);
 static void on_settings_clicked(GtkButton *button, gpointer user_data);
 static gboolean on_key_press_event(GtkWidget *widget, GdkEventKey *event,
                                    gpointer user_data);
@@ -32,6 +33,7 @@ static gboolean geometry_debug_enabled(void) {
 
 MarkydWindow *markyd_window_new(MarkydApp *app) {
   MarkydWindow *self = g_new0(MarkydWindow, 1);
+  GtkWidget *left_buttons;
 
   self->app = app;
 
@@ -76,14 +78,24 @@ MarkydWindow *markyd_window_new(MarkydApp *app) {
       gtk_button_new_from_icon_name("document-open-symbolic", GTK_ICON_SIZE_BUTTON);
   gtk_widget_set_tooltip_text(self->btn_open, "Open Markdown Document");
   g_signal_connect(self->btn_open, "clicked", G_CALLBACK(on_open_clicked), self);
-  gtk_header_bar_pack_start(GTK_HEADER_BAR(self->header_bar), self->btn_open);
+
+  self->btn_refresh =
+      gtk_button_new_from_icon_name("view-refresh-symbolic", GTK_ICON_SIZE_BUTTON);
+  gtk_widget_set_tooltip_text(self->btn_refresh, "Reload Current Document");
+  g_signal_connect(self->btn_refresh, "clicked", G_CALLBACK(on_refresh_clicked),
+                   self);
 
   self->btn_settings =
       gtk_button_new_from_icon_name("emblem-system-symbolic", GTK_ICON_SIZE_BUTTON);
   gtk_widget_set_tooltip_text(self->btn_settings, "Settings");
   g_signal_connect(self->btn_settings, "clicked", G_CALLBACK(on_settings_clicked),
                    self);
-  gtk_header_bar_pack_end(GTK_HEADER_BAR(self->header_bar), self->btn_settings);
+
+  left_buttons = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+  gtk_box_pack_start(GTK_BOX(left_buttons), self->btn_open, FALSE, FALSE, 0);
+  gtk_box_pack_start(GTK_BOX(left_buttons), self->btn_refresh, FALSE, FALSE, 0);
+  gtk_box_pack_start(GTK_BOX(left_buttons), self->btn_settings, FALSE, FALSE, 0);
+  gtk_header_bar_pack_start(GTK_HEADER_BAR(self->header_bar), left_buttons);
 
   self->scroll = gtk_scrolled_window_new(NULL, NULL);
   gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(self->scroll),
@@ -269,6 +281,29 @@ static void on_open_clicked(GtkButton *button, gpointer user_data) {
   }
 
   gtk_widget_destroy(dialog);
+}
+
+static void on_refresh_clicked(GtkButton *button, gpointer user_data) {
+  MarkydWindow *self = (MarkydWindow *)user_data;
+  const gchar *path;
+
+  (void)button;
+
+  path = markyd_app_get_current_path(self->app);
+  if (!path || path[0] == '\0') {
+    return;
+  }
+
+  if (!markyd_app_open_file(self->app, path)) {
+    GtkWidget *error_dialog = gtk_message_dialog_new(
+        GTK_WINDOW(self->window),
+        GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT, GTK_MESSAGE_ERROR,
+        GTK_BUTTONS_CLOSE, "Failed to reload document");
+    gtk_message_dialog_format_secondary_text(GTK_MESSAGE_DIALOG(error_dialog),
+                                             "%s", path);
+    gtk_dialog_run(GTK_DIALOG(error_dialog));
+    gtk_widget_destroy(error_dialog);
+  }
 }
 
 static void on_settings_clicked(GtkButton *button, gpointer user_data) {
