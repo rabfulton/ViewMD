@@ -7,7 +7,10 @@
 MarkydApp *app = NULL;
 
 static void on_activate(GtkApplication *gtk_app, gpointer user_data);
+static void on_open(GtkApplication *gtk_app, GFile **files, gint n_files,
+                    const gchar *hint, gpointer user_data);
 static void markyd_app_update_window_title(MarkydApp *self);
+static void markyd_app_ensure_window(MarkydApp *self);
 
 MarkydApp *markyd_app_new(void) {
   MarkydApp *self = g_new0(MarkydApp, 1);
@@ -21,12 +24,14 @@ MarkydApp *markyd_app_new(void) {
 #else
       G_APPLICATION_FLAGS_NONE;
 #endif
-  flags = (GApplicationFlags)(flags | G_APPLICATION_NON_UNIQUE);
+  flags = (GApplicationFlags)(flags | G_APPLICATION_NON_UNIQUE |
+                              G_APPLICATION_HANDLES_OPEN);
 
   self->gtk_app = gtk_application_new("org.viewmd.app", flags);
   self->current_file_path = NULL;
 
   g_signal_connect(self->gtk_app, "activate", G_CALLBACK(on_activate), self);
+  g_signal_connect(self->gtk_app, "open", G_CALLBACK(on_open), self);
 
   app = self;
   return self;
@@ -78,9 +83,42 @@ static void on_activate(GtkApplication *gtk_app, gpointer user_data) {
   MarkydApp *self = (MarkydApp *)user_data;
 
   (void)gtk_app;
+  markyd_app_ensure_window(self);
+  markyd_window_show(self->window);
+}
 
+static void on_open(GtkApplication *gtk_app, GFile **files, gint n_files,
+                    const gchar *hint, gpointer user_data) {
+  MarkydApp *self = (MarkydApp *)user_data;
+  gboolean opened = FALSE;
+
+  (void)gtk_app;
+  (void)hint;
+
+  markyd_app_ensure_window(self);
+
+  for (gint i = 0; i < n_files; i++) {
+    gchar *path = g_file_get_path(files[i]);
+    if (!path) {
+      continue;
+    }
+    if (markyd_app_open_file(self, path)) {
+      opened = TRUE;
+      g_free(path);
+      break;
+    }
+    g_free(path);
+  }
+
+  if (!opened && n_files > 0) {
+    g_printerr("ViewMD: unable to open provided file(s)\n");
+  }
+
+  markyd_window_show(self->window);
+}
+
+static void markyd_app_ensure_window(MarkydApp *self) {
   if (self->window) {
-    markyd_window_show(self->window);
     return;
   }
 
@@ -90,8 +128,6 @@ static void on_activate(GtkApplication *gtk_app, gpointer user_data) {
   markyd_editor_set_content(self->editor,
                             "# ViewMD\n\nUse the Open button to load a markdown document.");
   markyd_app_update_window_title(self);
-
-  markyd_window_show(self->window);
 }
 
 gboolean markyd_app_open_file(MarkydApp *self, const gchar *path) {

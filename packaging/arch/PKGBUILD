@@ -1,7 +1,4 @@
-## Maintainer: rabfulton (GitHub) <noreply@github.com>
-
-_pkgname=viewmd
-pkgname=viewmd-git
+pkgname=viewmd
 pkgver=0.r0.g0000000
 pkgrel=1
 pkgdesc="Lightweight GTK3 markdown viewer"
@@ -10,13 +7,11 @@ url="https://github.com/rabfulton/ViewMD"
 license=('MIT')
 depends=('gtk3')
 makedepends=('git' 'gcc' 'make' 'pkgconf')
-provides=('viewmd')
-conflicts=('viewmd')
-source=("$_pkgname::git+$url.git")
+source=("$pkgname::git+$url.git")
 sha256sums=('SKIP')
 
 pkgver() {
-  cd "$srcdir/$_pkgname" || {
+  cd "$srcdir/$pkgname" || {
     echo "0.r0.g0000000"
     return
   }
@@ -37,11 +32,11 @@ pkgver() {
 }
 
 build() {
-  cd "$srcdir/$_pkgname"
+  cd "$srcdir/$pkgname"
   make
 }
 
 package() {
-  cd "$srcdir/$_pkgname"
+  cd "$srcdir/$pkgname"
   make install DESTDIR="$pkgdir" PREFIX=/usr
 }
