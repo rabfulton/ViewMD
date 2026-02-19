@@ -27,7 +27,7 @@ A lightweight GTK 3 markdown viewer for desktop Linux. It is ideal as your defau
 | `> quote` | Block quote |
 | `[text](url)` | Link |
 | `~~strike~~` | Strikethrough |
-| `| table | row |` | Markdown tables |
+| `\| table \| row \|` | Markdown tables |
 | `---` | Horizontal rule |
 
 Code blocks currently support a beta version of keyword highlighting for fenced languages `c`, `java`, and `python`.
