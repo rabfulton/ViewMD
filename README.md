@@ -126,7 +126,8 @@ sudo dnf install gtk3-devel
 MIT License
 
 ## Other Useful Projects
-- TrayMD is the companion app for taking notes in markdown with live editing [TrayMD](https://github.com/rabfulton/TrayMD)
+- TrayMD is an app for taking notes in markdown with live editing [TrayMD](https://github.com/rabfulton/TrayMD)
+- Preditor is an image viewer with a similar philosophy to viewmd [preditor](https://github.com/rabfulton/preditor)
 - Try my AI panel plugin for XFCE [XFCE Ask](https://github.com/rabfulton/xfce-ask)
 - For a feature complete AI application try out [ChatGTK](https://github.com/rabfulton/ChatGTK)
 - A lightweight speech to text implementation [Auriscribe](https://github.com/rabfulton/Auriscribe)
