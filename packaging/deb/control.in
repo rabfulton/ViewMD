@@ -1,0 +1,9 @@
+Package: viewmd
+Version: @VERSION@
+Section: utils
+Priority: optional
+Architecture: @ARCH@
+Maintainer: @MAINTAINER@
+Depends: libgtk-3-0
+Description: ViewMD - lightweight GTK3 markdown viewer
+ ViewMD is a lightweight native GTK3 markdown viewer.

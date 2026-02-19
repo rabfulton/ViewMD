@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=ViewMD
+Comment=Lightweight markdown viewer
+Exec=viewmd
+Icon=accessories-text-editor
+Terminal=false
+Type=Application
+Categories=Utility;TextEditor;
+Keywords=markdown;viewer;
+MimeType=text/markdown;text/x-markdown;

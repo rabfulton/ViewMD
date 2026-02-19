@@ -1,0 +1,36 @@
+Name:           viewmd
+Version:        @VERSION@
+Release:        1%{?dist}
+Summary:        Lightweight GTK3 markdown viewer
+
+License:        MIT
+URL:            @URL@
+Source0:        viewmd-%{version}.tar.gz
+
+BuildRequires:  gcc
+BuildRequires:  make
+BuildRequires:  pkgconfig
+BuildRequires:  gtk3-devel
+
+Requires:       gtk3
+
+%description
+ViewMD is a lightweight native GTK3 markdown viewer.
+
+%prep
+%autosetup -n viewmd-%{version}
+
+%build
+make %{?_smp_mflags}
+
+%install
+rm -rf %{buildroot}
+make install DESTDIR=%{buildroot} PREFIX=%{_prefix}
+
+%files
+%{_bindir}/viewmd
+%{_datadir}/applications/viewmd.desktop
+
+%changelog
+* Thu Jan 01 1970 ViewMD Packager <noreply@example.com> - @VERSION@-1
+- Initial package
