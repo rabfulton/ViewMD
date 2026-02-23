@@ -4,9 +4,49 @@
 #include "editor.h"
 #include "markdown.h"
 
+typedef struct {
+  gint start_offset;
+  gint end_offset;
+  GtkTextChildAnchor *table_anchor;
+  gint table_row;
+  gint table_col;
+} SearchMatch;
+
+#define TAG_SEARCH_MATCH "viewmd_search_match"
+#define TAG_SEARCH_CURRENT "viewmd_search_current"
+
 static void on_open_clicked(GtkButton *button, gpointer user_data);
 static void on_refresh_clicked(GtkButton *button, gpointer user_data);
 static void on_settings_clicked(GtkButton *button, gpointer user_data);
+static void on_search_changed(GtkEditable *editable, gpointer user_data);
+static void on_search_prev_clicked(GtkButton *button, gpointer user_data);
+static void on_search_next_clicked(GtkButton *button, gpointer user_data);
+static gboolean on_search_entry_key_press(GtkWidget *widget, GdkEventKey *event,
+                                          gpointer user_data);
+static void on_editor_buffer_changed(GtkTextBuffer *buffer, gpointer user_data);
+static void ensure_search_tags(MarkydWindow *self);
+static void update_search_tag_styles(MarkydWindow *self, const gchar *match_bg,
+                                     const gchar *match_fg,
+                                     const gchar *current_bg,
+                                     const gchar *current_fg);
+static void clear_search_matches(MarkydWindow *self);
+static void update_search_matches(MarkydWindow *self);
+static void jump_to_search_match(MarkydWindow *self, gint index,
+                                 gboolean scroll_to_match);
+static void clear_table_search_highlight(MarkydWindow *self, gboolean clear_match,
+                                         gboolean clear_current);
+static void apply_table_search_match_highlight(MarkydWindow *self);
+static gboolean resolve_table_match_location(MarkydWindow *self, gint start_offset,
+                                             gint end_offset,
+                                             GtkTextChildAnchor **out_anchor,
+                                             gint *out_row, gint *out_col);
+static GtkWidget *lookup_table_cell_widget(GtkWidget *table_widget, gint row,
+                                           gint col);
+static void set_table_cell_highlight(GtkWidget *cell, gboolean match,
+                                     gboolean current);
+static gboolean scroll_to_table_cell(MarkydWindow *self, GtkWidget *cell);
+static void show_search_ui(MarkydWindow *self);
+static void hide_search_ui(MarkydWindow *self);
 static gboolean on_key_press_event(GtkWidget *widget, GdkEventKey *event,
                                    gpointer user_data);
 static gboolean on_configure_event(GtkWidget *widget, GdkEventConfigure *event,
@@ -31,9 +71,540 @@ static gboolean geometry_debug_enabled(void) {
   return v && v[0] != '\0' && g_strcmp0(v, "0") != 0;
 }
 
+static void ensure_search_tags(MarkydWindow *self) {
+  GtkTextTagTable *table;
+
+  if (!self || !self->editor || !self->editor->buffer) {
+    return;
+  }
+
+  table = gtk_text_buffer_get_tag_table(self->editor->buffer);
+  if (!table) {
+    return;
+  }
+
+  if (!gtk_text_tag_table_lookup(table, TAG_SEARCH_MATCH)) {
+    gtk_text_buffer_create_tag(self->editor->buffer, TAG_SEARCH_MATCH, "weight",
+                               PANGO_WEIGHT_BOLD, NULL);
+  }
+  if (!gtk_text_tag_table_lookup(table, TAG_SEARCH_CURRENT)) {
+    gtk_text_buffer_create_tag(self->editor->buffer, TAG_SEARCH_CURRENT, "weight",
+                               PANGO_WEIGHT_BOLD, NULL);
+  }
+}
+
+static void update_search_tag_styles(MarkydWindow *self, const gchar *match_bg,
+                                     const gchar *match_fg,
+                                     const gchar *current_bg,
+                                     const gchar *current_fg) {
+  GtkTextTagTable *table;
+  GtkTextTag *tag;
+
+  if (!self || !self->editor || !self->editor->buffer) {
+    return;
+  }
+
+  table = gtk_text_buffer_get_tag_table(self->editor->buffer);
+  if (!table) {
+    return;
+  }
+
+  tag = gtk_text_tag_table_lookup(table, TAG_SEARCH_MATCH);
+  if (tag) {
+    g_object_set(tag, "background", match_bg, "foreground", match_fg, NULL);
+  }
+
+  tag = gtk_text_tag_table_lookup(table, TAG_SEARCH_CURRENT);
+  if (tag) {
+    g_object_set(tag, "background", current_bg, "foreground", current_fg, NULL);
+  }
+}
+
+static void clear_search_matches(MarkydWindow *self) {
+  GtkTextIter start;
+  GtkTextIter end;
+
+  if (!self || !self->editor || !self->editor->buffer) {
+    return;
+  }
+
+  gtk_text_buffer_get_bounds(self->editor->buffer, &start, &end);
+  gtk_text_buffer_remove_tag_by_name(self->editor->buffer, TAG_SEARCH_MATCH,
+                                     &start, &end);
+  gtk_text_buffer_remove_tag_by_name(self->editor->buffer, TAG_SEARCH_CURRENT,
+                                     &start, &end);
+  clear_table_search_highlight(self, TRUE, TRUE);
+
+  if (self->search_matches) {
+    g_array_set_size(self->search_matches, 0);
+  }
+  self->search_current_index = -1;
+
+  if (self->lbl_search_status) {
+    gtk_label_set_text(GTK_LABEL(self->lbl_search_status), "");
+  }
+  if (self->btn_search_prev) {
+    gtk_widget_set_sensitive(self->btn_search_prev, FALSE);
+  }
+  if (self->btn_search_next) {
+    gtk_widget_set_sensitive(self->btn_search_next, FALSE);
+  }
+}
+
+static void set_table_cell_highlight(GtkWidget *cell, gboolean match,
+                                     gboolean current) {
+  GtkStyleContext *style;
+
+  if (!cell) {
+    return;
+  }
+
+  style = gtk_widget_get_style_context(cell);
+  if (match) {
+    gtk_style_context_add_class(style, VIEWMD_TABLE_CELL_MATCH_CLASS);
+  } else {
+    gtk_style_context_remove_class(style, VIEWMD_TABLE_CELL_MATCH_CLASS);
+  }
+
+  if (current) {
+    gtk_style_context_add_class(style, VIEWMD_TABLE_CELL_CURRENT_CLASS);
+  } else {
+    gtk_style_context_remove_class(style, VIEWMD_TABLE_CELL_CURRENT_CLASS);
+  }
+}
+
+static gboolean scroll_to_table_cell(MarkydWindow *self, GtkWidget *cell) {
+  gint x = 0;
+  gint y = 0;
+  GtkAllocation alloc;
+  GtkAdjustment *hadj;
+  GtkAdjustment *vadj;
+
+  if (!self || !cell || !self->editor || !self->editor->text_view || !self->scroll) {
+    return FALSE;
+  }
+
+  if (!gtk_widget_translate_coordinates(cell, self->editor->text_view, 0, 0, &x,
+                                        &y)) {
+    return FALSE;
+  }
+
+  gtk_widget_get_allocation(cell, &alloc);
+  hadj = gtk_scrolled_window_get_hadjustment(GTK_SCROLLED_WINDOW(self->scroll));
+  vadj = gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(self->scroll));
+
+  if (hadj) {
+    gtk_adjustment_clamp_page(hadj, MAX(0, x - 12), MAX(0, x + alloc.width + 12));
+  }
+  if (vadj) {
+    gtk_adjustment_clamp_page(vadj, MAX(0, y - 12), MAX(0, y + alloc.height + 12));
+  }
+
+  return TRUE;
+}
+
+static GtkWidget *lookup_table_cell_widget(GtkWidget *table_widget, gint row,
+                                           gint col) {
+  GList *wrapper_children;
+  GtkWidget *found = NULL;
+
+  if (!table_widget || !GTK_IS_CONTAINER(table_widget)) {
+    return NULL;
+  }
+
+  wrapper_children = gtk_container_get_children(GTK_CONTAINER(table_widget));
+  for (GList *w = wrapper_children; w != NULL && !found; w = w->next) {
+    GtkWidget *child = GTK_WIDGET(w->data);
+    if (!GTK_IS_GRID(child)) {
+      continue;
+    }
+
+    GList *grid_children = gtk_container_get_children(GTK_CONTAINER(child));
+    for (GList *g = grid_children; g != NULL; g = g->next) {
+      GtkWidget *cell = GTK_WIDGET(g->data);
+      gint cell_row = GPOINTER_TO_INT(
+          g_object_get_data(G_OBJECT(cell), VIEWMD_TABLE_CELL_ROW_DATA));
+      gint cell_col = GPOINTER_TO_INT(
+          g_object_get_data(G_OBJECT(cell), VIEWMD_TABLE_CELL_COL_DATA));
+      if (cell_row == row && cell_col == col) {
+        found = cell;
+        break;
+      }
+    }
+    g_list_free(grid_children);
+  }
+  g_list_free(wrapper_children);
+
+  return found;
+}
+
+static void clear_table_search_highlight(MarkydWindow *self, gboolean clear_match,
+                                         gboolean clear_current) {
+  GtkTextIter iter;
+  GtkTextIter end;
+
+  if (!self || !self->editor || !self->editor->buffer) {
+    return;
+  }
+
+  gtk_text_buffer_get_bounds(self->editor->buffer, &iter, &end);
+  while (!gtk_text_iter_equal(&iter, &end)) {
+    GtkTextChildAnchor *anchor = gtk_text_iter_get_child_anchor(&iter);
+    if (anchor &&
+        g_object_get_data(G_OBJECT(anchor), VIEWMD_TABLE_ANCHOR_DATA) != NULL) {
+      GtkWidget *table_widget =
+          g_object_get_data(G_OBJECT(anchor), VIEWMD_TABLE_WIDGET_DATA);
+      if (table_widget && GTK_IS_CONTAINER(table_widget)) {
+        GList *wrapper_children =
+            gtk_container_get_children(GTK_CONTAINER(table_widget));
+        for (GList *w = wrapper_children; w != NULL; w = w->next) {
+          GtkWidget *child = GTK_WIDGET(w->data);
+          if (!GTK_IS_GRID(child)) {
+            continue;
+          }
+          GList *grid_children = gtk_container_get_children(GTK_CONTAINER(child));
+          for (GList *g = grid_children; g != NULL; g = g->next) {
+            GtkWidget *cell = GTK_WIDGET(g->data);
+            if (clear_match) {
+              gtk_style_context_remove_class(gtk_widget_get_style_context(cell),
+                                             VIEWMD_TABLE_CELL_MATCH_CLASS);
+            }
+            if (clear_current) {
+              gtk_style_context_remove_class(gtk_widget_get_style_context(cell),
+                                             VIEWMD_TABLE_CELL_CURRENT_CLASS);
+            }
+          }
+          g_list_free(grid_children);
+        }
+        g_list_free(wrapper_children);
+      }
+    }
+    gtk_text_iter_forward_char(&iter);
+  }
+}
+
+static gboolean resolve_table_match_location(MarkydWindow *self, gint start_offset,
+                                             gint end_offset,
+                                             GtkTextChildAnchor **out_anchor,
+                                             gint *out_row, gint *out_col) {
+  GtkTextIter iter;
+  GtkTextIter end;
+
+  if (out_anchor) {
+    *out_anchor = NULL;
+  }
+  if (out_row) {
+    *out_row = -1;
+  }
+  if (out_col) {
+    *out_col = -1;
+  }
+
+  if (!self || !self->editor || !self->editor->buffer ||
+      end_offset <= start_offset) {
+    return FALSE;
+  }
+
+  gtk_text_buffer_get_bounds(self->editor->buffer, &iter, &end);
+  while (!gtk_text_iter_equal(&iter, &end)) {
+    GtkTextChildAnchor *anchor = gtk_text_iter_get_child_anchor(&iter);
+    if (anchor) {
+      ViewmdTableSearchIndex *index = g_object_get_data(
+          G_OBJECT(anchor), VIEWMD_TABLE_SEARCH_INDEX_DATA);
+      if (index && start_offset < index->end_offset &&
+          end_offset > index->start_offset) {
+        if (out_anchor) {
+          *out_anchor = anchor;
+        }
+
+        if (index->cells) {
+          for (guint i = 0; i < index->cells->len; i++) {
+            ViewmdTableSearchCellRange *cell =
+                &g_array_index(index->cells, ViewmdTableSearchCellRange, i);
+            if (start_offset < cell->end_offset && end_offset > cell->start_offset) {
+              if (out_row) {
+                *out_row = cell->row;
+              }
+              if (out_col) {
+                *out_col = cell->col;
+              }
+              return TRUE;
+            }
+          }
+        }
+
+        return TRUE;
+      }
+    }
+    gtk_text_iter_forward_char(&iter);
+  }
+
+  return FALSE;
+}
+
+static void apply_table_search_match_highlight(MarkydWindow *self) {
+  if (!self || !self->search_matches) {
+    return;
+  }
+
+  clear_table_search_highlight(self, TRUE, FALSE);
+
+  for (guint i = 0; i < self->search_matches->len; i++) {
+    SearchMatch *match = &g_array_index(self->search_matches, SearchMatch, i);
+    GtkWidget *table_widget;
+    GtkWidget *cell;
+
+    if (!match->table_anchor || match->table_row < 0 || match->table_col < 0) {
+      continue;
+    }
+
+    table_widget =
+        g_object_get_data(G_OBJECT(match->table_anchor), VIEWMD_TABLE_WIDGET_DATA);
+    cell = lookup_table_cell_widget(table_widget, match->table_row, match->table_col);
+    if (cell) {
+      set_table_cell_highlight(cell, TRUE, FALSE);
+    }
+  }
+}
+
+static void jump_to_search_match(MarkydWindow *self, gint index,
+                                 gboolean scroll_to_match) {
+  GtkTextIter start;
+  GtkTextIter end;
+  SearchMatch *match;
+  gchar *status;
+
+  if (!self || !self->editor || !self->editor->buffer || !self->search_matches ||
+      self->search_matches->len == 0) {
+    return;
+  }
+
+  if (index < 0 || index >= (gint)self->search_matches->len) {
+    return;
+  }
+
+  gtk_text_buffer_get_bounds(self->editor->buffer, &start, &end);
+  gtk_text_buffer_remove_tag_by_name(self->editor->buffer, TAG_SEARCH_CURRENT,
+                                     &start, &end);
+  clear_table_search_highlight(self, FALSE, TRUE);
+
+  match = &g_array_index(self->search_matches, SearchMatch, index);
+  if (match->table_anchor && match->table_row >= 0 && match->table_col >= 0) {
+    GtkWidget *table_widget =
+        g_object_get_data(G_OBJECT(match->table_anchor), VIEWMD_TABLE_WIDGET_DATA);
+    GtkWidget *cell =
+        lookup_table_cell_widget(table_widget, match->table_row, match->table_col);
+    if (cell) {
+      set_table_cell_highlight(cell, TRUE, TRUE);
+    }
+  } else {
+    gtk_text_buffer_get_iter_at_offset(self->editor->buffer, &start,
+                                       match->start_offset);
+    gtk_text_buffer_get_iter_at_offset(self->editor->buffer, &end,
+                                       match->end_offset);
+    gtk_text_buffer_apply_tag_by_name(self->editor->buffer, TAG_SEARCH_CURRENT,
+                                      &start, &end);
+    gtk_text_buffer_place_cursor(self->editor->buffer, &start);
+  }
+
+  if (scroll_to_match && self->editor->text_view) {
+    if (match->table_anchor) {
+      gboolean scrolled_to_cell = FALSE;
+      if (match->table_row >= 0 && match->table_col >= 0) {
+        GtkWidget *table_widget = g_object_get_data(G_OBJECT(match->table_anchor),
+                                                    VIEWMD_TABLE_WIDGET_DATA);
+        GtkWidget *cell = lookup_table_cell_widget(table_widget, match->table_row,
+                                                   match->table_col);
+        if (cell) {
+          scrolled_to_cell = scroll_to_table_cell(self, cell);
+        }
+      }
+      if (!scrolled_to_cell) {
+        GtkTextIter anchor_iter;
+        gtk_text_buffer_get_iter_at_child_anchor(self->editor->buffer, &anchor_iter,
+                                                 match->table_anchor);
+        gtk_text_view_scroll_to_iter(GTK_TEXT_VIEW(self->editor->text_view),
+                                     &anchor_iter, 0.2, FALSE, 0.0, 0.0);
+      }
+    } else {
+      gtk_text_view_scroll_to_iter(GTK_TEXT_VIEW(self->editor->text_view), &start,
+                                   0.2, FALSE, 0.0, 0.0);
+    }
+  }
+
+  self->search_current_index = index;
+  status = g_strdup_printf("%d/%u", index + 1, self->search_matches->len);
+  gtk_label_set_text(GTK_LABEL(self->lbl_search_status), status);
+  g_free(status);
+}
+
+static void update_search_matches(MarkydWindow *self) {
+  const gchar *query;
+  GtkTextIter iter;
+  GtkTextIter match_start;
+  GtkTextIter match_end;
+  GtkTextIter end;
+
+  if (!self || !self->editor || !self->editor->buffer || !self->search_entry) {
+    return;
+  }
+
+  query = gtk_entry_get_text(GTK_ENTRY(self->search_entry));
+  clear_search_matches(self);
+
+  if (!query || query[0] == '\0') {
+    return;
+  }
+
+  ensure_search_tags(self);
+  gtk_text_buffer_get_start_iter(self->editor->buffer, &iter);
+  gtk_text_buffer_get_end_iter(self->editor->buffer, &end);
+
+  while (gtk_text_iter_forward_search(&iter, query,
+                                      GTK_TEXT_SEARCH_CASE_INSENSITIVE |
+                                          GTK_TEXT_SEARCH_TEXT_ONLY,
+                                      &match_start, &match_end, &end)) {
+    SearchMatch match = {gtk_text_iter_get_offset(&match_start),
+                         gtk_text_iter_get_offset(&match_end), NULL, -1, -1};
+    gtk_text_buffer_apply_tag_by_name(self->editor->buffer, TAG_SEARCH_MATCH,
+                                      &match_start, &match_end);
+    resolve_table_match_location(self, match.start_offset, match.end_offset,
+                                 &match.table_anchor, &match.table_row,
+                                 &match.table_col);
+    g_array_append_val(self->search_matches, match);
+    iter = match_end;
+  }
+
+  if (self->search_matches->len == 0) {
+    gtk_label_set_text(GTK_LABEL(self->lbl_search_status), "0 matches");
+    return;
+  }
+
+  gtk_widget_set_sensitive(self->btn_search_prev, TRUE);
+  gtk_widget_set_sensitive(self->btn_search_next, TRUE);
+  apply_table_search_match_highlight(self);
+  jump_to_search_match(self, 0, TRUE);
+}
+
+static void show_search_ui(MarkydWindow *self) {
+  if (!self || !self->search_revealer || !self->search_entry) {
+    return;
+  }
+
+  gtk_revealer_set_reveal_child(GTK_REVEALER(self->search_revealer), TRUE);
+  gtk_widget_grab_focus(self->search_entry);
+  gtk_editable_select_region(GTK_EDITABLE(self->search_entry), 0, -1);
+
+  if (gtk_entry_get_text_length(GTK_ENTRY(self->search_entry)) > 0) {
+    update_search_matches(self);
+  }
+}
+
+static void hide_search_ui(MarkydWindow *self) {
+  if (!self || !self->search_revealer || !self->search_entry) {
+    return;
+  }
+
+  gtk_revealer_set_reveal_child(GTK_REVEALER(self->search_revealer), FALSE);
+  gtk_entry_set_text(GTK_ENTRY(self->search_entry), "");
+  clear_search_matches(self);
+  markyd_editor_focus(self->editor);
+}
+
+static void on_search_changed(GtkEditable *editable, gpointer user_data) {
+  MarkydWindow *self = (MarkydWindow *)user_data;
+  (void)editable;
+  update_search_matches(self);
+}
+
+static void on_search_prev_clicked(GtkButton *button, gpointer user_data) {
+  MarkydWindow *self = (MarkydWindow *)user_data;
+  gint index;
+
+  (void)button;
+
+  if (!self || !self->search_matches || self->search_matches->len == 0) {
+    return;
+  }
+
+  index = self->search_current_index - 1;
+  if (index < 0) {
+    index = (gint)self->search_matches->len - 1;
+  }
+  jump_to_search_match(self, index, TRUE);
+}
+
+static void on_search_next_clicked(GtkButton *button, gpointer user_data) {
+  MarkydWindow *self = (MarkydWindow *)user_data;
+  gint index;
+
+  (void)button;
+
+  if (!self || !self->search_matches || self->search_matches->len == 0) {
+    return;
+  }
+
+  index = self->search_current_index + 1;
+  if (index >= (gint)self->search_matches->len) {
+    index = 0;
+  }
+  jump_to_search_match(self, index, TRUE);
+}
+
+static gboolean on_search_entry_key_press(GtkWidget *widget, GdkEventKey *event,
+                                          gpointer user_data) {
+  MarkydWindow *self = (MarkydWindow *)user_data;
+  gboolean shift_pressed;
+
+  (void)widget;
+
+  if (!event) {
+    return FALSE;
+  }
+
+  shift_pressed = (event->state & GDK_SHIFT_MASK) != 0;
+  if (event->keyval == GDK_KEY_Return || event->keyval == GDK_KEY_KP_Enter) {
+    if (shift_pressed) {
+      on_search_prev_clicked(NULL, self);
+    } else {
+      on_search_next_clicked(NULL, self);
+    }
+    return TRUE;
+  }
+
+  if (event->keyval == GDK_KEY_Escape) {
+    hide_search_ui(self);
+    return TRUE;
+  }
+
+  return FALSE;
+}
+
+static void on_editor_buffer_changed(GtkTextBuffer *buffer, gpointer user_data) {
+  MarkydWindow *self = (MarkydWindow *)user_data;
+  (void)buffer;
+
+  if (!self || !self->search_revealer || !self->search_entry) {
+    return;
+  }
+
+  if (!gtk_revealer_get_reveal_child(GTK_REVEALER(self->search_revealer))) {
+    return;
+  }
+
+  if (gtk_entry_get_text_length(GTK_ENTRY(self->search_entry)) == 0) {
+    clear_search_matches(self);
+    return;
+  }
+
+  update_search_matches(self);
+}
+
 MarkydWindow *markyd_window_new(MarkydApp *app) {
   MarkydWindow *self = g_new0(MarkydWindow, 1);
   GtkWidget *left_buttons;
+  GtkWidget *main_box;
+  GtkWidget *search_box;
 
   self->app = app;
 
@@ -97,19 +668,68 @@ MarkydWindow *markyd_window_new(MarkydApp *app) {
   gtk_box_pack_start(GTK_BOX(left_buttons), self->btn_settings, FALSE, FALSE, 0);
   gtk_header_bar_pack_start(GTK_HEADER_BAR(self->header_bar), left_buttons);
 
+  main_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+  gtk_container_add(GTK_CONTAINER(self->window), main_box);
+
+  self->search_revealer = gtk_revealer_new();
+  gtk_revealer_set_transition_type(GTK_REVEALER(self->search_revealer),
+                                   GTK_REVEALER_TRANSITION_TYPE_SLIDE_DOWN);
+  gtk_revealer_set_reveal_child(GTK_REVEALER(self->search_revealer), FALSE);
+  gtk_box_pack_start(GTK_BOX(main_box), self->search_revealer, FALSE, FALSE, 0);
+
+  search_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+  gtk_widget_set_margin_top(search_box, 6);
+  gtk_widget_set_margin_bottom(search_box, 6);
+  gtk_widget_set_margin_start(search_box, 8);
+  gtk_widget_set_margin_end(search_box, 8);
+  gtk_container_add(GTK_CONTAINER(self->search_revealer), search_box);
+
+  self->search_entry = gtk_search_entry_new();
+  gtk_widget_set_hexpand(self->search_entry, TRUE);
+  gtk_widget_set_tooltip_text(self->search_entry, "Find in document");
+  g_signal_connect(self->search_entry, "changed", G_CALLBACK(on_search_changed),
+                   self);
+  g_signal_connect(self->search_entry, "key-press-event",
+                   G_CALLBACK(on_search_entry_key_press), self);
+  gtk_box_pack_start(GTK_BOX(search_box), self->search_entry, TRUE, TRUE, 0);
+
+  self->btn_search_prev =
+      gtk_button_new_from_icon_name("go-up-symbolic", GTK_ICON_SIZE_BUTTON);
+  gtk_widget_set_tooltip_text(self->btn_search_prev, "Previous Match");
+  g_signal_connect(self->btn_search_prev, "clicked",
+                   G_CALLBACK(on_search_prev_clicked), self);
+  gtk_widget_set_sensitive(self->btn_search_prev, FALSE);
+  gtk_box_pack_start(GTK_BOX(search_box), self->btn_search_prev, FALSE, FALSE, 0);
+
+  self->btn_search_next =
+      gtk_button_new_from_icon_name("go-down-symbolic", GTK_ICON_SIZE_BUTTON);
+  gtk_widget_set_tooltip_text(self->btn_search_next, "Next Match");
+  g_signal_connect(self->btn_search_next, "clicked",
+                   G_CALLBACK(on_search_next_clicked), self);
+  gtk_widget_set_sensitive(self->btn_search_next, FALSE);
+  gtk_box_pack_start(GTK_BOX(search_box), self->btn_search_next, FALSE, FALSE, 0);
+
+  self->lbl_search_status = gtk_label_new("");
+  gtk_widget_set_halign(self->lbl_search_status, GTK_ALIGN_END);
+  gtk_box_pack_start(GTK_BOX(search_box), self->lbl_search_status, FALSE, FALSE, 0);
+
   self->scroll = gtk_scrolled_window_new(NULL, NULL);
   gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(self->scroll),
                                  GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
-  gtk_container_add(GTK_CONTAINER(self->window), self->scroll);
+  gtk_box_pack_start(GTK_BOX(main_box), self->scroll, TRUE, TRUE, 0);
 
   self->editor = markyd_editor_new(app);
   gtk_container_add(GTK_CONTAINER(self->scroll),
                     markyd_editor_get_widget(self->editor));
+  self->search_matches = g_array_new(FALSE, FALSE, sizeof(SearchMatch));
+  self->search_current_index = -1;
+  g_signal_connect(self->editor->buffer, "changed",
+                   G_CALLBACK(on_editor_buffer_changed), self);
+  ensure_search_tags(self);
 
   markyd_window_apply_css(self);
 
-  gtk_widget_show_all(self->header_bar);
-  gtk_widget_show_all(self->scroll);
+  gtk_widget_show_all(self->window);
 
   return self;
 }
@@ -124,6 +744,10 @@ void markyd_window_apply_css(MarkydWindow *self) {
   const gchar *table_fg;
   const gchar *table_header_bg;
   const gchar *table_border;
+  const gchar *search_match_bg;
+  const gchar *search_match_fg;
+  const gchar *search_current_bg;
+  const gchar *search_current_fg;
 
   if (css) {
     gtk_style_context_remove_provider_for_screen(gdk_screen_get_default(),
@@ -137,14 +761,26 @@ void markyd_window_apply_css(MarkydWindow *self) {
     bg = "#ffffff";
     fg = "#111111";
     sel_bg = "#cfe3ff";
+    search_match_bg = "#fff3b0";
+    search_match_fg = "#111111";
+    search_current_bg = "#ffd166";
+    search_current_fg = "#111111";
   } else if (g_strcmp0(config->theme, "dark") == 0) {
     bg = "#1e1e1e";
     fg = "#e8e8e8";
     sel_bg = "#264f78";
+    search_match_bg = "#3e3a12";
+    search_match_fg = "#f4f4e8";
+    search_current_bg = "#66551f";
+    search_current_fg = "#f4f4e8";
   } else {
     bg = "@theme_base_color";
     fg = "@theme_text_color";
     sel_bg = "@theme_selected_bg_color";
+    search_match_bg = "@theme_selected_bg_color";
+    search_match_fg = "@theme_selected_fg_color";
+    search_current_bg = "@theme_selected_bg_color";
+    search_current_fg = "@theme_selected_fg_color";
   }
 
   table_bg = bg;
@@ -187,9 +823,22 @@ void markyd_window_apply_css(MarkydWindow *self) {
       "}"
       ".viewmd-table-cell label {"
       "  color: %s;"
+      "}"
+      ".viewmd-table-cell." VIEWMD_TABLE_CELL_MATCH_CLASS " {"
+      "  background-color: %s;"
+      "}"
+      ".viewmd-table-cell." VIEWMD_TABLE_CELL_MATCH_CLASS " label {"
+      "  color: %s;"
+      "}"
+      ".viewmd-table-cell." VIEWMD_TABLE_CELL_CURRENT_CLASS " {"
+      "  background-color: %s;"
+      "}"
+      ".viewmd-table-cell." VIEWMD_TABLE_CELL_CURRENT_CLASS " label {"
+      "  color: %s;"
       "}",
       config->font_family, config->font_size, bg, fg, fg, bg, fg, fg, sel_bg, bg,
-      bg, table_bg, table_border, table_header_bg, table_fg);
+      bg, table_bg, table_border, table_header_bg, table_fg, search_match_bg,
+      search_match_fg, search_current_bg, search_current_fg);
 
   gtk_css_provider_load_from_data(css, css_str, -1, NULL);
   g_free(css_str);
@@ -198,12 +847,19 @@ void markyd_window_apply_css(MarkydWindow *self) {
       gdk_screen_get_default(), GTK_STYLE_PROVIDER(css),
       GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
 
-  (void)self;
+  update_search_tag_styles(self, search_match_bg, search_match_fg,
+                           search_current_bg, search_current_fg);
+
 }
 
 void markyd_window_free(MarkydWindow *self) {
   if (!self)
     return;
+
+  if (self->search_matches) {
+    g_array_free(self->search_matches, TRUE);
+    self->search_matches = NULL;
+  }
 
   if (self->editor) {
     markyd_editor_free(self->editor);
@@ -328,10 +984,26 @@ static void on_settings_clicked(GtkButton *button, gpointer user_data) {
 
 static gboolean on_key_press_event(GtkWidget *widget, GdkEventKey *event,
                                    gpointer user_data) {
-  (void)user_data;
-  (void)widget;
+  MarkydWindow *self = (MarkydWindow *)user_data;
 
-  if (event && event->keyval == GDK_KEY_Escape) {
+  if (!event || !self) {
+    return FALSE;
+  }
+
+  if ((event->state & GDK_CONTROL_MASK) != 0 &&
+      (event->keyval == GDK_KEY_f || event->keyval == GDK_KEY_F)) {
+    show_search_ui(self);
+    return TRUE;
+  }
+
+  if (event->keyval == GDK_KEY_Escape &&
+      self->search_revealer &&
+      gtk_revealer_get_reveal_child(GTK_REVEALER(self->search_revealer))) {
+    hide_search_ui(self);
+    return TRUE;
+  }
+
+  if (event->keyval == GDK_KEY_Escape) {
     gtk_window_close(GTK_WINDOW(widget));
     return TRUE;
   }

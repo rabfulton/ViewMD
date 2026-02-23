@@ -20,6 +20,29 @@ void markdown_update_accent_tags(GtkTextBuffer *buffer);
 
 /* GObject data key used to mark table child anchors with parsed table data. */
 #define VIEWMD_TABLE_ANCHOR_DATA "viewmd-table-anchor"
+/* GObject data key set on table anchors for hidden searchable index metadata. */
+#define VIEWMD_TABLE_SEARCH_INDEX_DATA "viewmd-table-search-index"
+/* GObject data key set on table anchors for attached table widget instance. */
+#define VIEWMD_TABLE_WIDGET_DATA "viewmd-table-widget"
+/* GObject data keys set on each table cell widget. */
+#define VIEWMD_TABLE_CELL_ROW_DATA "viewmd-table-cell-row"
+#define VIEWMD_TABLE_CELL_COL_DATA "viewmd-table-cell-col"
+/* CSS classes for table search highlight states. */
+#define VIEWMD_TABLE_CELL_MATCH_CLASS "viewmd-table-cell-match"
+#define VIEWMD_TABLE_CELL_CURRENT_CLASS "viewmd-table-cell-current"
+
+typedef struct {
+  gint row;
+  gint col;
+  gint start_offset;
+  gint end_offset;
+} ViewmdTableSearchCellRange;
+
+typedef struct {
+  gint start_offset;
+  gint end_offset;
+  GArray *cells; /* ViewmdTableSearchCellRange */
+} ViewmdTableSearchIndex;
 
 /* Normalize heading/link text into anchor slug form. Caller owns result. */
 gchar *markdown_normalize_anchor_slug(const gchar *text);

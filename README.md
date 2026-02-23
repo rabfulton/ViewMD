@@ -11,6 +11,7 @@ A lightweight GTK 3 markdown viewer for desktop Linux. It is ideal as your defau
 - **Minimal UI** - Clean toolbar with open and settings buttons
 - **Lightweight** - Pure C, no web technologies, fast startup
 - **Hyperlink support** - Left click opens links and internal anchors
+- **Document search** - `Ctrl+F` with next/previous match navigation
 
 ## Supported Markdown
 
@@ -59,7 +60,15 @@ sudo dnf install ./viewmd-*.rpm
 Run `viewmd` to start the application.
 
 - **Open button**: Open a markdown document
+- **Reload button**: Reload the currently open document from disk
 - **Settings button**: Adjust theme, fonts, and markdown accent colors
+
+### Find in Document
+
+- Press `Ctrl+F` to open search.
+- Type to highlight matches as you search.
+- Press `Enter` for next match and `Shift+Enter` for previous match.
+- Press `Esc` to close search.
 
 ### Set as Default `.md` Viewer
 

@@ -12,10 +12,17 @@ typedef struct _MarkydWindow {
   GtkWidget *btn_open;
   GtkWidget *btn_refresh;
   GtkWidget *btn_settings;
+  GtkWidget *search_revealer;
+  GtkWidget *search_entry;
+  GtkWidget *btn_search_prev;
+  GtkWidget *btn_search_next;
+  GtkWidget *lbl_search_status;
   GtkWidget *lbl_title;
   GtkWidget *scroll;
   MarkydEditor *editor;
   MarkydApp *app;
+  GArray *search_matches;
+  gint search_current_index;
 } MarkydWindow;
 
 /* Lifecycle */

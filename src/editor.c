@@ -12,8 +12,6 @@ static void apply_markdown(MarkydEditor *self);
 static void schedule_markdown_apply(MarkydEditor *self);
 static void render_table_widgets(MarkydEditor *self);
 
-static const gchar *TABLE_WIDGET_DATA_KEY = "viewmd-table-widget";
-
 static gchar *get_url_from_iter_tags(GtkTextIter *iter) {
   GSList *tags;
   gchar *url = NULL;
@@ -152,14 +150,15 @@ static void render_table_widgets(MarkydEditor *self) {
     GtkTextChildAnchor *anchor = gtk_text_iter_get_child_anchor(&iter);
     if (anchor &&
         g_object_get_data(G_OBJECT(anchor), VIEWMD_TABLE_ANCHOR_DATA) != NULL) {
-      GtkWidget *table = g_object_get_data(G_OBJECT(anchor), TABLE_WIDGET_DATA_KEY);
+      GtkWidget *table =
+          g_object_get_data(G_OBJECT(anchor), VIEWMD_TABLE_WIDGET_DATA);
       if (!table) {
         table = markdown_create_table_widget(anchor);
         if (table) {
           gtk_text_view_add_child_at_anchor(GTK_TEXT_VIEW(self->text_view), table,
                                             anchor);
           gtk_widget_show_all(table);
-          g_object_set_data(G_OBJECT(anchor), TABLE_WIDGET_DATA_KEY, table);
+          g_object_set_data(G_OBJECT(anchor), VIEWMD_TABLE_WIDGET_DATA, table);
         }
       }
     }

@@ -589,6 +589,103 @@ static void table_capture_append(RenderCtx *ctx, const gchar *text) {
   g_free(escaped);
 }
 
+static gchar *table_cell_markup_to_plain(const gchar *markup) {
+  gchar *plain = NULL;
+  GError *error = NULL;
+
+  if (!markup || markup[0] == '\0') {
+    return g_strdup("");
+  }
+
+  if (pango_parse_markup(markup, -1, 0, NULL, &plain, NULL, &error)) {
+    return plain;
+  }
+
+  if (error) {
+    g_error_free(error);
+  }
+  return g_strdup(markup);
+}
+
+static void table_search_index_free(gpointer data) {
+  ViewmdTableSearchIndex *index = (ViewmdTableSearchIndex *)data;
+  if (!index) {
+    return;
+  }
+  if (index->cells) {
+    g_array_free(index->cells, TRUE);
+  }
+  g_free(index);
+}
+
+static void table_emit_hidden_search_text(RenderCtx *ctx, ViewmdTable *table,
+                                          GtkTextChildAnchor *anchor) {
+  ViewmdTableSearchIndex *index;
+
+  if (!ctx || !ctx->buffer || !table || !anchor || !table->rows ||
+      table->rows->len == 0 || table->col_count == 0) {
+    return;
+  }
+
+  index = g_new0(ViewmdTableSearchIndex, 1);
+  index->cells = g_array_new(FALSE, FALSE, sizeof(ViewmdTableSearchCellRange));
+  index->start_offset = gtk_text_iter_get_offset(&ctx->iter);
+
+  for (guint r = 0; r < table->rows->len; r++) {
+    ViewmdTableRow *row = g_ptr_array_index(table->rows, r);
+    if (!row) {
+      continue;
+    }
+
+    for (guint c = 0; c < table->col_count; c++) {
+      const gchar *cell_markup = "";
+      gchar *plain;
+      gint cell_start;
+      gint cell_end;
+
+      if (c < row->cells->len) {
+        cell_markup = g_ptr_array_index(row->cells, c);
+        if (!cell_markup) {
+          cell_markup = "";
+        }
+      }
+
+      plain = table_cell_markup_to_plain(cell_markup);
+      cell_start = gtk_text_iter_get_offset(&ctx->iter);
+      if (plain && plain[0] != '\0') {
+        gtk_text_buffer_insert(ctx->buffer, &ctx->iter, plain, -1);
+      }
+      cell_end = gtk_text_iter_get_offset(&ctx->iter);
+
+      if (cell_end > cell_start) {
+        ViewmdTableSearchCellRange cell_range = {(gint)r, (gint)c, cell_start,
+                                                 cell_end};
+        g_array_append_val(index->cells, cell_range);
+      }
+
+      g_free(plain);
+
+      if (c + 1 < table->col_count) {
+        gtk_text_buffer_insert(ctx->buffer, &ctx->iter, "\t", 1);
+      }
+    }
+
+    if (r + 1 < table->rows->len) {
+      gtk_text_buffer_insert(ctx->buffer, &ctx->iter, "\n", 1);
+    }
+  }
+
+  index->end_offset = gtk_text_iter_get_offset(&ctx->iter);
+  if (index->end_offset > index->start_offset) {
+    apply_tag_by_name_offsets(ctx->buffer, TAG_INVISIBLE, index->start_offset,
+                              index->end_offset);
+    g_object_set_data_full(G_OBJECT(anchor), VIEWMD_TABLE_SEARCH_INDEX_DATA, index,
+                           table_search_index_free);
+  } else {
+    table_search_index_free(index);
+  }
+}
+
 static void table_capture_span_enter(RenderCtx *ctx, MD_SPANTYPE type) {
   if (!ctx || !ctx->table_cell_text) {
     return;
@@ -710,6 +807,9 @@ static void table_emit_anchor(RenderCtx *ctx) {
   g_object_set_data(G_OBJECT(anchor), VIEWMD_TABLE_ANCHOR_DATA, GINT_TO_POINTER(1));
   g_object_set_data_full(G_OBJECT(anchor), TABLE_MODEL_DATA_KEY, ctx->table_model,
                          viewmd_table_free);
+
+  /* Keep table text searchable via Ctrl+F without showing duplicate content. */
+  table_emit_hidden_search_text(ctx, ctx->table_model, anchor);
 
   /* Force at least one hard line break after the embedded table widget so
    * following markdown never shares the same visual line. */
@@ -1241,6 +1341,10 @@ GtkWidget *markdown_create_table_widget(GtkTextChildAnchor *anchor) {
         gtk_style_context_add_class(gtk_widget_get_style_context(cell),
                                     "viewmd-table-header-cell");
       }
+      g_object_set_data(G_OBJECT(cell), VIEWMD_TABLE_CELL_ROW_DATA,
+                        GINT_TO_POINTER((gint)r));
+      g_object_set_data(G_OBJECT(cell), VIEWMD_TABLE_CELL_COL_DATA,
+                        GINT_TO_POINTER((gint)c));
       gtk_style_context_add_class(gtk_widget_get_style_context(label),
                                   "viewmd-table-label");
       gtk_widget_set_hexpand(cell, FALSE);
