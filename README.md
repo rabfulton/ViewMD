@@ -12,6 +12,7 @@ A lightweight GTK 3 markdown viewer for desktop Linux. It is ideal as your defau
 - **Lightweight** - Pure C, no web technologies, fast startup
 - **Hyperlink support** - Left click opens links and internal anchors
 - **Document search** - `Ctrl+F` with next/previous match navigation
+- **Local image support** - Local images are resized to fit the the document window
 
 ## Supported Markdown
 
