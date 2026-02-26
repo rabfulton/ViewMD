@@ -31,6 +31,12 @@ void markdown_update_accent_tags(GtkTextBuffer *buffer);
 #define VIEWMD_TABLE_CELL_MATCH_CLASS "viewmd-table-cell-match"
 #define VIEWMD_TABLE_CELL_CURRENT_CLASS "viewmd-table-cell-current"
 
+/* GObject data keys for image anchors and metadata. */
+#define VIEWMD_IMAGE_ANCHOR_DATA "viewmd-image-anchor"
+#define VIEWMD_IMAGE_SRC_DATA "viewmd-image-src"
+#define VIEWMD_IMAGE_ALT_DATA "viewmd-image-alt"
+#define VIEWMD_IMAGE_WIDGET_DATA "viewmd-image-widget"
+
 typedef struct {
   gint row;
   gint col;

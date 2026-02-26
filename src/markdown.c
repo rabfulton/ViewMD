@@ -74,6 +74,9 @@ typedef struct {
   ViewmdTableRow *table_current_row;
   GString *table_cell_text;
   guint table_current_col;
+  gboolean in_image;
+  gchar *image_src;
+  GString *image_alt;
   GArray *code_blocks; /* CodeBlockRange */
   gint current_code_start_offset;
   const MarkydLanguageHighlight *current_code_language;
@@ -272,6 +275,14 @@ static void update_newline_state(RenderCtx *ctx, const gchar *text, gsize len) {
       ctx->trailing_newlines = 0;
     }
   }
+}
+
+static void note_non_newline_output(RenderCtx *ctx) {
+  if (!ctx) {
+    return;
+  }
+  ctx->has_output = TRUE;
+  ctx->trailing_newlines = 0;
 }
 
 static void apply_tag_by_offsets(GtkTextBuffer *buffer, GtkTextTag *tag,
@@ -654,6 +665,7 @@ static void table_emit_hidden_search_text(RenderCtx *ctx, ViewmdTable *table,
       cell_start = gtk_text_iter_get_offset(&ctx->iter);
       if (plain && plain[0] != '\0') {
         gtk_text_buffer_insert(ctx->buffer, &ctx->iter, plain, -1);
+        update_newline_state(ctx, plain, strlen(plain));
       }
       cell_end = gtk_text_iter_get_offset(&ctx->iter);
 
@@ -667,11 +679,13 @@ static void table_emit_hidden_search_text(RenderCtx *ctx, ViewmdTable *table,
 
       if (c + 1 < table->col_count) {
         gtk_text_buffer_insert(ctx->buffer, &ctx->iter, "\t", 1);
+        update_newline_state(ctx, "\t", 1);
       }
     }
 
     if (r + 1 < table->rows->len) {
       gtk_text_buffer_insert(ctx->buffer, &ctx->iter, "\n", 1);
+      update_newline_state(ctx, "\n", 1);
     }
   }
 
@@ -804,6 +818,7 @@ static void table_emit_anchor(RenderCtx *ctx) {
   }
 
   anchor = gtk_text_buffer_create_child_anchor(ctx->buffer, &ctx->iter);
+  note_non_newline_output(ctx);
   g_object_set_data(G_OBJECT(anchor), VIEWMD_TABLE_ANCHOR_DATA, GINT_TO_POINTER(1));
   g_object_set_data_full(G_OBJECT(anchor), TABLE_MODEL_DATA_KEY, ctx->table_model,
                          viewmd_table_free);
@@ -816,6 +831,31 @@ static void table_emit_anchor(RenderCtx *ctx) {
   insert_cstr(ctx, "\n");
 
   ctx->table_model = NULL;
+}
+
+static void image_emit_anchor(RenderCtx *ctx) {
+  GtkTextChildAnchor *anchor;
+  gchar *alt = NULL;
+
+  if (!ctx || !ctx->buffer || !ctx->image_src || ctx->image_src[0] == '\0') {
+    return;
+  }
+
+  anchor = gtk_text_buffer_create_child_anchor(ctx->buffer, &ctx->iter);
+  note_non_newline_output(ctx);
+  g_object_set_data(G_OBJECT(anchor), VIEWMD_IMAGE_ANCHOR_DATA, GINT_TO_POINTER(1));
+  g_object_set_data_full(G_OBJECT(anchor), VIEWMD_IMAGE_SRC_DATA,
+                         g_strdup(ctx->image_src), g_free);
+
+  if (ctx->image_alt && ctx->image_alt->len > 0) {
+    alt = g_strdup(ctx->image_alt->str);
+  } else {
+    alt = g_strdup("");
+  }
+  g_object_set_data_full(G_OBJECT(anchor), VIEWMD_IMAGE_ALT_DATA, alt, g_free);
+
+  /* Keep following markdown on a new visual line after embedded images. */
+  insert_cstr(ctx, "\n");
 }
 
 static void insert_list_marker(RenderCtx *ctx) {
@@ -1105,6 +1145,19 @@ static int on_enter_span(MD_SPANTYPE type, void *detail, void *userdata) {
     break;
   }
 
+  case MD_SPAN_IMG: {
+    MD_SPAN_IMG_DETAIL *img = (MD_SPAN_IMG_DETAIL *)detail;
+    g_free(ctx->image_src);
+    ctx->image_src = attr_to_string(img ? &img->src : NULL);
+    if (!ctx->image_alt) {
+      ctx->image_alt = g_string_new(NULL);
+    } else {
+      g_string_set_size(ctx->image_alt, 0);
+    }
+    ctx->in_image = TRUE;
+    break;
+  }
+
   default:
     break;
   }
@@ -1119,6 +1172,15 @@ static int on_leave_span(MD_SPANTYPE type, void *detail, void *userdata) {
   if (ctx->span_stack->len > 0) {
     SpanState state =
         g_array_index(ctx->span_stack, SpanState, ctx->span_stack->len - 1);
+    if (state.type == MD_SPAN_IMG && ctx->in_image) {
+      image_emit_anchor(ctx);
+      ctx->in_image = FALSE;
+      g_free(ctx->image_src);
+      ctx->image_src = NULL;
+      if (ctx->image_alt) {
+        g_string_set_size(ctx->image_alt, 0);
+      }
+    }
     if (ctx->table_cell_text) {
       table_capture_span_leave(ctx, state.type);
     }
@@ -1145,7 +1207,12 @@ static int on_text(MD_TEXTTYPE type, const MD_CHAR *text, MD_SIZE size,
   if (ctx->list_item_prefix_pending && rendered[0] != '\0') {
     ctx->list_item_prefix_pending = FALSE;
   }
-  if (ctx->table_cell_text) {
+  if (ctx->in_image) {
+    if (!ctx->image_alt) {
+      ctx->image_alt = g_string_new(NULL);
+    }
+    g_string_append(ctx->image_alt, rendered);
+  } else if (ctx->table_cell_text) {
     table_capture_append(ctx, rendered);
   } else {
     insert_cstr(ctx, rendered);
@@ -1425,6 +1492,10 @@ void markdown_apply_tags(GtkTextBuffer *buffer, const gchar *source) {
 
   if (ctx.table_cell_text) {
     g_string_free(ctx.table_cell_text, TRUE);
+  }
+  g_free(ctx.image_src);
+  if (ctx.image_alt) {
+    g_string_free(ctx.image_alt, TRUE);
   }
   if (ctx.table_model) {
     viewmd_table_free(ctx.table_model);
