@@ -632,11 +632,18 @@ static void table_search_index_free(gpointer data) {
 static void table_emit_hidden_search_text(RenderCtx *ctx, ViewmdTable *table,
                                           GtkTextChildAnchor *anchor) {
   ViewmdTableSearchIndex *index;
+  gboolean saved_has_output;
+  guint saved_trailing_newlines;
+  const gchar *cell_sep = " ";
 
   if (!ctx || !ctx->buffer || !table || !anchor || !table->rows ||
       table->rows->len == 0 || table->col_count == 0) {
     return;
   }
+
+  /* Hidden search text must not affect visible block spacing state. */
+  saved_has_output = ctx->has_output;
+  saved_trailing_newlines = ctx->trailing_newlines;
 
   index = g_new0(ViewmdTableSearchIndex, 1);
   index->cells = g_array_new(FALSE, FALSE, sizeof(ViewmdTableSearchCellRange));
@@ -665,7 +672,6 @@ static void table_emit_hidden_search_text(RenderCtx *ctx, ViewmdTable *table,
       cell_start = gtk_text_iter_get_offset(&ctx->iter);
       if (plain && plain[0] != '\0') {
         gtk_text_buffer_insert(ctx->buffer, &ctx->iter, plain, -1);
-        update_newline_state(ctx, plain, strlen(plain));
       }
       cell_end = gtk_text_iter_get_offset(&ctx->iter);
 
@@ -677,15 +683,9 @@ static void table_emit_hidden_search_text(RenderCtx *ctx, ViewmdTable *table,
 
       g_free(plain);
 
-      if (c + 1 < table->col_count) {
-        gtk_text_buffer_insert(ctx->buffer, &ctx->iter, "\t", 1);
-        update_newline_state(ctx, "\t", 1);
+      if (!(r + 1 == table->rows->len && c + 1 == table->col_count)) {
+        gtk_text_buffer_insert(ctx->buffer, &ctx->iter, cell_sep, -1);
       }
-    }
-
-    if (r + 1 < table->rows->len) {
-      gtk_text_buffer_insert(ctx->buffer, &ctx->iter, "\n", 1);
-      update_newline_state(ctx, "\n", 1);
     }
   }
 
@@ -698,6 +698,9 @@ static void table_emit_hidden_search_text(RenderCtx *ctx, ViewmdTable *table,
   } else {
     table_search_index_free(index);
   }
+
+  ctx->has_output = saved_has_output;
+  ctx->trailing_newlines = saved_trailing_newlines;
 }
 
 static void table_capture_span_enter(RenderCtx *ctx, MD_SPANTYPE type) {
@@ -825,10 +828,6 @@ static void table_emit_anchor(RenderCtx *ctx) {
 
   /* Keep table text searchable via Ctrl+F without showing duplicate content. */
   table_emit_hidden_search_text(ctx, ctx->table_model, anchor);
-
-  /* Force at least one hard line break after the embedded table widget so
-   * following markdown never shares the same visual line. */
-  insert_cstr(ctx, "\n");
 
   ctx->table_model = NULL;
 }

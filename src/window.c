@@ -176,6 +176,8 @@ static void set_table_cell_highlight(GtkWidget *cell, gboolean match,
 static gboolean scroll_to_table_cell(MarkydWindow *self, GtkWidget *cell) {
   gint x = 0;
   gint y = 0;
+  gdouble doc_x;
+  gdouble doc_y;
   GtkAllocation alloc;
   GtkAdjustment *hadj;
   GtkAdjustment *vadj;
@@ -192,12 +194,21 @@ static gboolean scroll_to_table_cell(MarkydWindow *self, GtkWidget *cell) {
   gtk_widget_get_allocation(cell, &alloc);
   hadj = gtk_scrolled_window_get_hadjustment(GTK_SCROLLED_WINDOW(self->scroll));
   vadj = gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(self->scroll));
+  doc_x = x + (hadj ? gtk_adjustment_get_value(hadj) : 0.0);
+  doc_y = y + (vadj ? gtk_adjustment_get_value(vadj) : 0.0);
 
   if (hadj) {
-    gtk_adjustment_clamp_page(hadj, MAX(0, x - 12), MAX(0, x + alloc.width + 12));
+    gdouble target = MAX(0.0, doc_x - 16.0);
+    gdouble max_val =
+        gtk_adjustment_get_upper(hadj) - gtk_adjustment_get_page_size(hadj);
+    gtk_adjustment_set_value(hadj, CLAMP(target, 0.0, MAX(0.0, max_val)));
   }
   if (vadj) {
-    gtk_adjustment_clamp_page(vadj, MAX(0, y - 12), MAX(0, y + alloc.height + 12));
+    gdouble page = gtk_adjustment_get_page_size(vadj);
+    gdouble target = MAX(0.0, doc_y - (page * 0.25));
+    gdouble max_val =
+        gtk_adjustment_get_upper(vadj) - gtk_adjustment_get_page_size(vadj);
+    gtk_adjustment_set_value(vadj, CLAMP(target, 0.0, MAX(0.0, max_val)));
   }
 
   return TRUE;
@@ -318,10 +329,11 @@ static gboolean resolve_table_match_location(MarkydWindow *self, gint start_offs
         }
 
         if (index->cells) {
+          ViewmdTableSearchCellRange *overlap_cell = NULL;
           for (guint i = 0; i < index->cells->len; i++) {
             ViewmdTableSearchCellRange *cell =
                 &g_array_index(index->cells, ViewmdTableSearchCellRange, i);
-            if (start_offset < cell->end_offset && end_offset > cell->start_offset) {
+            if (start_offset >= cell->start_offset && start_offset < cell->end_offset) {
               if (out_row) {
                 *out_row = cell->row;
               }
@@ -330,6 +342,18 @@ static gboolean resolve_table_match_location(MarkydWindow *self, gint start_offs
               }
               return TRUE;
             }
+            if (start_offset < cell->end_offset && end_offset > cell->start_offset) {
+              overlap_cell = cell;
+            }
+          }
+          if (overlap_cell) {
+            if (out_row) {
+              *out_row = overlap_cell->row;
+            }
+            if (out_col) {
+              *out_col = overlap_cell->col;
+            }
+            return TRUE;
           }
         }
 
