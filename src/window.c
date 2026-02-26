@@ -1032,6 +1032,31 @@ static gboolean on_key_press_event(GtkWidget *widget, GdkEventKey *event,
     return TRUE;
   }
 
+  if (event->keyval == GDK_KEY_Home || event->keyval == GDK_KEY_KP_Home) {
+    if (self->editor && self->editor->buffer && self->editor->text_view) {
+      GtkTextIter start;
+      GtkAdjustment *hadj = NULL;
+      GtkAdjustment *vadj = NULL;
+
+      gtk_text_buffer_get_start_iter(self->editor->buffer, &start);
+      gtk_text_buffer_place_cursor(self->editor->buffer, &start);
+      gtk_text_view_scroll_to_iter(GTK_TEXT_VIEW(self->editor->text_view), &start,
+                                   0.0, FALSE, 0.0, 0.0);
+
+      if (self->scroll) {
+        hadj = gtk_scrolled_window_get_hadjustment(GTK_SCROLLED_WINDOW(self->scroll));
+        vadj = gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(self->scroll));
+      }
+      if (hadj) {
+        gtk_adjustment_set_value(hadj, gtk_adjustment_get_lower(hadj));
+      }
+      if (vadj) {
+        gtk_adjustment_set_value(vadj, gtk_adjustment_get_lower(vadj));
+      }
+    }
+    return TRUE;
+  }
+
   return FALSE;
 }
 

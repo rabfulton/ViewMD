@@ -30,6 +30,11 @@ typedef struct {
 } ListState;
 
 typedef struct {
+  gint left_margin;
+  gint indent;
+} ListLayoutSpec;
+
+typedef struct {
   MD_BLOCKTYPE type;
   guint pushed_tags;
 } BlockState;
@@ -346,6 +351,61 @@ static void ensure_newlines(RenderCtx *ctx, guint min_newlines) {
   while (ctx->trailing_newlines < min_newlines) {
     insert_cstr(ctx, "\n");
   }
+}
+
+static guint decimal_digits(guint value) {
+  guint digits = 1;
+  while (value >= 10) {
+    value /= 10;
+    digits++;
+  }
+  return digits;
+}
+
+static guint list_marker_columns(RenderCtx *ctx) {
+  ListState *list;
+  if (!ctx || !ctx->list_stack || ctx->list_stack->len == 0) {
+    return 2; /* "• " */
+  }
+  list = &g_array_index(ctx->list_stack, ListState, ctx->list_stack->len - 1);
+  if (list->ordered) {
+    return decimal_digits(MAX(1, list->next_index)) + 2; /* "12. " */
+  }
+  return 2; /* "• " */
+}
+
+static ListLayoutSpec compute_list_layout(guint depth, guint quote_depth,
+                                          guint marker_cols) {
+  ListLayoutSpec spec = {0, 0};
+  guint depth_index = (depth > 0) ? (depth - 1) : 0;
+  gint marker_px = (gint)CLAMP((gint)marker_cols * 9, 16, 64);
+  gint base_indent = 20 + ((gint)depth_index * 22) + ((gint)quote_depth * 24);
+
+  spec.left_margin = base_indent + marker_px;
+  spec.indent = -marker_px;
+  return spec;
+}
+
+static GtkTextTag *ensure_list_layout_tag(RenderCtx *ctx, guint depth,
+                                          guint quote_depth,
+                                          guint marker_cols) {
+  gchar *name;
+  GtkTextTag *tag;
+  ListLayoutSpec spec;
+
+  if (!ctx || !ctx->buffer) {
+    return NULL;
+  }
+
+  name = g_strdup_printf("list_layout_%u_%u_%u", depth, quote_depth, marker_cols);
+  tag = lookup_tag(ctx->buffer, name);
+  if (!tag) {
+    spec = compute_list_layout(depth, quote_depth, marker_cols);
+    tag = gtk_text_buffer_create_tag(ctx->buffer, name, "left-margin",
+                                     spec.left_margin, "indent", spec.indent, NULL);
+  }
+  g_free(name);
+  return tag;
 }
 
 static void push_active_tag(RenderCtx *ctx, GtkTextTag *tag, guint *counter) {
@@ -862,19 +922,12 @@ static void insert_list_marker(RenderCtx *ctx) {
   gchar *ordered = NULL;
   gint marker_start_offset;
   gint marker_end_offset;
-  guint depth_indent;
 
   if (!ctx || ctx->list_stack->len == 0) {
     return;
   }
 
   list = &g_array_index(ctx->list_stack, ListState, ctx->list_stack->len - 1);
-  depth_indent = ((ctx->list_stack->len > 0) ? (ctx->list_stack->len - 1) * 2 : 0) +
-                 (ctx->quote_depth * 2);
-
-  for (guint i = 0; i < depth_indent; i++) {
-    insert_cstr(ctx, " ");
-  }
 
   marker_start_offset = gtk_text_iter_get_offset(&ctx->iter);
   if (list->ordered) {
@@ -964,13 +1017,19 @@ static int on_enter_block(MD_BLOCKTYPE type, void *detail, void *userdata) {
   }
 
   case MD_BLOCK_LI:
-    ensure_newlines(ctx, 1);
-    push_active_tag_by_name(ctx, TAG_LIST,
-                            &g_array_index(ctx->block_stack, BlockState,
-                                           ctx->block_stack->len - 1)
-                                 .pushed_tags);
-    insert_list_marker(ctx);
-    ctx->list_item_prefix_pending = TRUE;
+    {
+      guint marker_cols = list_marker_columns(ctx);
+      GtkTextTag *layout_tag = ensure_list_layout_tag(
+          ctx, ctx->list_stack->len, ctx->quote_depth, marker_cols);
+
+      ensure_newlines(ctx, 1);
+      push_active_tag(ctx, layout_tag,
+                      &g_array_index(ctx->block_stack, BlockState,
+                                     ctx->block_stack->len - 1)
+                           .pushed_tags);
+      insert_list_marker(ctx);
+      ctx->list_item_prefix_pending = TRUE;
+    }
     break;
 
   case MD_BLOCK_HR: {
