@@ -12,7 +12,10 @@ A lightweight GTK 3 markdown viewer for desktop Linux. It is ideal as your defau
 - **Lightweight** - Pure C, no web technologies, fast startup
 - **Hyperlink support** - Left click opens links and internal anchors
 - **Document search** - `Ctrl+F` with next/previous match navigation
-- **Local image support** - Local images are resized to fit the the document window
+- **Local image support** - Local images are resized to fit the document window
+- **Watch mode** - `--watch` auto-reloads the file on every save
+- **Editor integration** - `--socket` opens a Unix socket for live Markdown push with optional scroll-to-line
+- **Stdin support** - Pipe content directly with `cat file.md | viewmd -`
 
 ## Supported Markdown
 
@@ -63,6 +66,46 @@ Run `viewmd` to start the application.
 - **Open button**: Open a markdown document
 - **Reload button**: Reload the currently open document from disk
 - **Settings button**: Adjust theme, fonts, and markdown accent colors
+
+### Command-line options
+
+```
+viewmd [OPTIONS] [FILE]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--watch`, `-w` | Auto-reload the file whenever it changes on disk |
+| `--socket` | Open a Unix socket for live content push from editors |
+| `-` (as FILE) | Read markdown from stdin (`cat file.md \| viewmd -`) |
+
+### Watch mode
+
+```bash
+viewmd --watch notes.md
+```
+
+The file is re-rendered within 100 ms of any write. When you open a different file via the toolbar the watch automatically follows.
+
+### Live push via Unix socket
+
+```bash
+viewmd --socket file.md
+```
+
+On startup, ViewMD prints `VIEWMD_SOCKET=/tmp/viewmd-<pid>.sock` to stdout and listens for connections. An editor plugin can connect, push raw Markdown, and disconnect:
+
+```bash
+echo "# Hello" | nc -U "$VIEWMD_SOCKET"
+```
+
+To also scroll the preview to a specific source line, prefix the payload with `CURSOR:<line>\n` (0-based):
+
+```bash
+{ printf 'CURSOR:42\n'; cat file.md; } | nc -U "$VIEWMD_SOCKET"
+```
+
+> **Note:** If ViewMD exits unexpectedly the socket file at `/tmp/viewmd-<pid>.sock` is left behind. Remove stale sockets with `rm /tmp/viewmd-*.sock`.
 
 ### Find in Document
 

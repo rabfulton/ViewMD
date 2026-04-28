@@ -13,6 +13,16 @@ typedef struct _MarkydApp {
   MarkydWindow *window;
   MarkydEditor *editor;
   gchar *current_file_path;
+
+  /* Hot-reload (--watch / -w) */
+  gboolean watch_mode;
+  GFileMonitor *file_monitor;
+  guint watch_reload_timeout_id;
+
+  /* Unix socket for live buffer push from editors (enabled by --socket). */
+  gboolean socket_mode;
+  gchar *socket_path;
+  gint sock_fd;
 } MarkydApp;
 
 /* Global app instance */
