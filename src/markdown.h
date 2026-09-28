@@ -12,6 +12,9 @@ void markdown_init_tags(GtkTextBuffer *buffer);
 /* Update accent colors for existing tags (after config changes). */
 void markdown_update_accent_tags(GtkTextBuffer *buffer);
 
+/* Recolor code/quote/table/link tags for a light or dark background. */
+void markdown_update_theme_tags(GtkTextBuffer *buffer, gboolean dark);
+
 /* Data key set on per-link metadata tags to store resolved URL/href. */
 #define VIEWMD_LINK_URL_DATA "viewmd-link-url"
 

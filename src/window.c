@@ -874,6 +874,26 @@ void markyd_window_apply_css(MarkydWindow *self) {
   update_search_tag_styles(self, search_match_bg, search_match_fg,
                            search_current_bg, search_current_fg);
 
+  {
+    gboolean dark;
+    if (g_strcmp0(config->theme, "light") == 0) {
+      dark = FALSE;
+    } else if (g_strcmp0(config->theme, "dark") == 0) {
+      dark = TRUE;
+    } else {
+      /* "system": decide by luminance of the GTK theme's base color */
+      GdkRGBA base;
+      GtkStyleContext *ctx = gtk_widget_get_style_context(
+          markyd_editor_get_widget(self->editor));
+      if (gtk_style_context_lookup_color(ctx, "theme_base_color", &base))
+        dark = (0.2126 * base.red + 0.7152 * base.green +
+                0.0722 * base.blue) < 0.5;
+      else
+        dark = FALSE;
+    }
+    markdown_update_theme_tags(self->editor->buffer, dark);
+  }
+
 }
 
 void markyd_window_free(MarkydWindow *self) {

@@ -2,6 +2,7 @@
 #include "code_highlight.h"
 #include "config.h"
 #include "md4c/md4c.h"
+#include <stdarg.h>
 #include <string.h>
 
 /* Tag names */
@@ -1393,6 +1394,55 @@ void markdown_update_accent_tags(GtkTextBuffer *buffer) {
   if (tag) {
     g_object_set(tag, "foreground", config->h1_color, NULL);
   }
+}
+
+typedef struct {
+  const gchar *code_bg, *code_fg;
+  const gchar *block_bg, *block_fg;
+  const gchar *quote_fg, *link, *muted;
+} ThemePalette;
+
+/* Dark palette: the original hardcoded One Dark colors. */
+static const ThemePalette palette_dark = {"#3E4451", "#E06C75", "#2C313A",
+                                          "#ABB2BF", "#5C6370", "#61AFEF",
+                                          "#5C6370"};
+
+/* Light palette: GitHub-like, grey backgrounds instead of dark slabs. */
+static const ThemePalette palette_light = {"#EFF1F3", "#1F2328", "#F6F8FA",
+                                           "#1F2328", "#57606A", "#0969DA",
+                                           "#8C959F"};
+
+static void set_tag(GtkTextTagTable *table, const gchar *name,
+                    const gchar *first_prop, ...) {
+  GtkTextTag *tag = gtk_text_tag_table_lookup(table, name);
+  va_list args;
+  if (!tag)
+    return;
+  va_start(args, first_prop);
+  g_object_set_valist(G_OBJECT(tag), first_prop, args);
+  va_end(args);
+}
+
+void markdown_update_theme_tags(GtkTextBuffer *buffer, gboolean dark) {
+  const ThemePalette *p = dark ? &palette_dark : &palette_light;
+  GtkTextTagTable *table;
+
+  if (!buffer)
+    return;
+  table = gtk_text_buffer_get_tag_table(buffer);
+  if (!table)
+    return;
+
+  set_tag(table, TAG_CODE, "background", p->code_bg, "foreground", p->code_fg,
+          NULL);
+  set_tag(table, TAG_CODE_BLOCK, "paragraph-background", p->block_bg,
+          "foreground", p->block_fg, NULL);
+  set_tag(table, TAG_QUOTE, "paragraph-background", p->block_bg, "foreground",
+          p->quote_fg, NULL);
+  set_tag(table, TAG_TABLE, "paragraph-background", p->block_bg, NULL);
+  set_tag(table, TAG_TABLE_SEPARATOR, "foreground", p->muted, NULL);
+  set_tag(table, TAG_HRULE, "foreground", p->muted, NULL);
+  set_tag(table, TAG_LINK, "foreground", p->link, NULL);
 }
 
 static gfloat align_to_xalign(MD_ALIGN align) {
