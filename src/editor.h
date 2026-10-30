@@ -18,6 +18,10 @@ typedef struct _MarkydEditor {
 
   /* Coalesce markdown re-rendering to idle to avoid invalidating GTK iterators. */
   guint markdown_idle_id;
+  guint scroll_restore_id;
+  gboolean preserve_scroll;
+  gdouble reload_hscroll;
+  gdouble reload_vscroll;
 } MarkydEditor;
 
 /* Lifecycle */
@@ -26,6 +30,8 @@ void markyd_editor_free(MarkydEditor *editor);
 
 /* Content management */
 void markyd_editor_set_content(MarkydEditor *editor, const gchar *content);
+/* Update a changed file without moving the reader back to the start. */
+void markyd_editor_reload_content(MarkydEditor *editor, const gchar *content);
 gchar *markyd_editor_get_content(MarkydEditor *editor);
 
 /* Widget access */

@@ -13,6 +13,10 @@ typedef struct _MarkydApp {
   MarkydWindow *window;
   MarkydEditor *editor;
   gchar *current_file_path;
+
+  GFileMonitor *file_monitor;
+  GFile *watched_file;
+  guint watch_reload_id;
 } MarkydApp;
 
 /* Global app instance */
@@ -25,6 +29,9 @@ int markyd_app_run(MarkydApp *app, int argc, char **argv);
 
 /* Document management */
 gboolean markyd_app_open_file(MarkydApp *app, const gchar *path);
+
+/* Apply the auto-reload preference to the currently open file. */
+void markyd_app_update_file_watch(MarkydApp *app);
 
 /* Utility */
 const gchar *markyd_app_get_current_path(MarkydApp *app);

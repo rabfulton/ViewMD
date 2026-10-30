@@ -8,6 +8,7 @@ A lightweight GTK 3 markdown viewer for desktop Linux. It is ideal as your defau
 
 - **Native GTK viewer** - No webviews
 - **Read-only rendering** - Focused on viewing markdown files
+- **Automatic reload** - Updates the preview when the open file changes on disk
 - **Minimal UI** - Clean toolbar with open and settings buttons
 - **Lightweight** - Pure C, no web technologies, fast startup
 - **Hyperlink support** - Left click opens links and internal anchors
@@ -63,6 +64,13 @@ Run `viewmd` to start the application.
 - **Open button**: Open a markdown document
 - **Reload button**: Reload the currently open document from disk
 - **Settings button**: Adjust theme, fonts, and markdown accent colors
+
+Files reload automatically after they are saved in another editor, including
+editors that replace the file when saving. ViewMD keeps your scroll position and
+retains the last preview if the file is temporarily unavailable. To keep a static
+preview, disable **Automatically reload changed files** in Settings and click
+**Apply**. The preference is saved between sessions; the Reload button and F5
+remain available for manual updates.
 
 ### Find in Document
 

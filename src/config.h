@@ -26,6 +26,7 @@ typedef struct _MarkydConfig {
   /* Editor */
   gboolean line_numbers;
   gboolean word_wrap;
+  gboolean auto_reload;
 } MarkydConfig;
 
 /* Global config instance */

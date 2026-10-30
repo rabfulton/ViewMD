@@ -17,12 +17,23 @@ bindir ?= $(PREFIX)/bin
 datadir ?= $(PREFIX)/share
 applicationsdir ?= $(datadir)/applications
 
-.PHONY: all clean install uninstall test
+.PHONY: all clean install uninstall test test-ui
 
 all: $(TARGET)
 
-test: $(OBJDIR)/test-markdown
+test: $(OBJDIR)/test-markdown $(OBJDIR)/test-app-watch
 	./$(OBJDIR)/test-markdown
+	./$(OBJDIR)/test-app-watch
+
+$(OBJDIR)/test-app-watch: tests/test_app_watch.c $(OBJDIR)/app.o $(OBJDIR)/config.o $(SRCDIR)/app.h $(SRCDIR)/editor.h $(SRCDIR)/config.h $(SRCDIR)/window.h
+	$(CC) $(CFLAGS) -I$(SRCDIR) tests/test_app_watch.c $(OBJDIR)/app.o $(OBJDIR)/config.o -o $@ $(LDFLAGS)
+
+# Requires a GTK display (for example: xvfb-run -a make test-ui).
+test-ui: $(OBJDIR)/test-watch-ui
+	./$(OBJDIR)/test-watch-ui
+
+$(OBJDIR)/test-watch-ui: tests/test_watch_ui.c $(filter-out $(OBJDIR)/main.o,$(OBJECTS)) $(SRCDIR)/app.h $(SRCDIR)/editor.h $(SRCDIR)/config.h $(SRCDIR)/window.h
+	$(CC) $(CFLAGS) -I$(SRCDIR) tests/test_watch_ui.c $(filter-out $(OBJDIR)/main.o,$(OBJECTS)) -o $@ $(LDFLAGS)
 
 $(OBJDIR)/test-markdown: tests/test_markdown.c $(OBJDIR)/markdown.o $(OBJDIR)/code_highlight.o $(OBJDIR)/config.o $(OBJDIR)/md4c.o $(SRCDIR)/markdown.h $(SRCDIR)/config.h
 	$(CC) $(CFLAGS) -I$(SRCDIR) tests/test_markdown.c $(OBJDIR)/markdown.o $(OBJDIR)/code_highlight.o $(OBJDIR)/config.o $(OBJDIR)/md4c.o -o $@ $(LDFLAGS)

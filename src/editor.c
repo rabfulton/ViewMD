@@ -357,10 +357,32 @@ static void render_table_widgets(MarkydEditor *self) {
   }
 }
 
+static gboolean restore_scroll_idle(gpointer user_data) {
+  MarkydEditor *self = user_data;
+  self->scroll_restore_id = 0;
+  if (self->text_view && self->buffer) {
+    GtkTextIter end;
+    GdkRectangle location;
+    /* Validate the new layout before clamping to its scrollable extent. */
+    gtk_text_buffer_get_end_iter(self->buffer, &end);
+    gtk_text_view_get_iter_location(GTK_TEXT_VIEW(self->text_view), &end, &location);
+    GtkAdjustment *hadj = gtk_scrollable_get_hadjustment(GTK_SCROLLABLE(self->text_view));
+    GtkAdjustment *vadj = gtk_scrollable_get_vadjustment(GTK_SCROLLABLE(self->text_view));
+    gtk_adjustment_set_value(hadj, self->reload_hscroll);
+    gtk_adjustment_set_value(vadj, self->reload_vscroll);
+  }
+  return G_SOURCE_REMOVE;
+}
+
 static gboolean apply_markdown_idle(gpointer user_data) {
   MarkydEditor *self = (MarkydEditor *)user_data;
   self->markdown_idle_id = 0;
   apply_markdown(self);
+  if (self->preserve_scroll) {
+    self->preserve_scroll = FALSE;
+    self->scroll_restore_id =
+        g_idle_add_full(G_PRIORITY_LOW, restore_scroll_idle, self, NULL);
+  }
   return G_SOURCE_REMOVE;
 }
 
@@ -435,6 +457,10 @@ static void on_text_view_destroyed(GtkWidget *widget, gpointer user_data) {
   }
   self->text_view = NULL;
   self->buffer = NULL;
+  if (self->scroll_restore_id) {
+    g_source_remove(self->scroll_restore_id);
+    self->scroll_restore_id = 0;
+  }
   if (self->markdown_idle_id != 0) {
     g_source_remove(self->markdown_idle_id);
     self->markdown_idle_id = 0;
@@ -444,6 +470,9 @@ static void on_text_view_destroyed(GtkWidget *widget, gpointer user_data) {
 void markyd_editor_free(MarkydEditor *self) {
   if (!self) {
     return;
+  }
+  if (self->scroll_restore_id) {
+    g_source_remove(self->scroll_restore_id);
   }
   if (self->text_view) {
     /* The window may destroy the text view after this editor is freed.
@@ -467,6 +496,11 @@ void markyd_editor_set_content(MarkydEditor *self, const gchar *content) {
     return;
   }
 
+  if (self->scroll_restore_id) {
+    g_source_remove(self->scroll_restore_id);
+    self->scroll_restore_id = 0;
+  }
+  self->preserve_scroll = FALSE;
   g_free(self->source_content);
   /* Guard against non-UTF-8 markdown (e.g. latin-1) crashing Pango later. */
   if (content) {
@@ -475,6 +509,22 @@ void markyd_editor_set_content(MarkydEditor *self, const gchar *content) {
     self->source_content = g_strdup("");
   }
   schedule_markdown_apply(self);
+}
+
+void markyd_editor_reload_content(MarkydEditor *self, const gchar *content) {
+  if (!self)
+    return;
+  gdouble hscroll = 0.0, vscroll = 0.0;
+  if (self->text_view) {
+    hscroll = gtk_adjustment_get_value(
+        gtk_scrollable_get_hadjustment(GTK_SCROLLABLE(self->text_view)));
+    vscroll = gtk_adjustment_get_value(
+        gtk_scrollable_get_vadjustment(GTK_SCROLLABLE(self->text_view)));
+  }
+  markyd_editor_set_content(self, content);
+  self->reload_hscroll = hscroll;
+  self->reload_vscroll = vscroll;
+  self->preserve_scroll = TRUE;
 }
 
 gchar *markyd_editor_get_content(MarkydEditor *self) {

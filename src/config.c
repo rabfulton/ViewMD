@@ -31,6 +31,7 @@ MarkydConfig *config_new(void) {
 
   cfg->line_numbers = FALSE;
   cfg->word_wrap = TRUE;
+  cfg->auto_reload = TRUE;
 
   return cfg;
 }
@@ -130,6 +131,13 @@ gboolean config_load(MarkydConfig *cfg) {
   if (g_key_file_has_key(keyfile, "Editor", "word_wrap", NULL))
     cfg->word_wrap =
         g_key_file_get_boolean(keyfile, "Editor", "word_wrap", NULL);
+  if (g_key_file_has_key(keyfile, "Editor", "auto_reload", NULL)) {
+    gboolean auto_reload =
+        g_key_file_get_boolean(keyfile, "Editor", "auto_reload", &error);
+    if (!error)
+      cfg->auto_reload = auto_reload;
+    g_clear_error(&error);
+  }
 
   g_key_file_free(keyfile);
   return TRUE;
@@ -166,6 +174,7 @@ gboolean config_save(MarkydConfig *cfg) {
 
   /* Editor */
   g_key_file_set_boolean(keyfile, "Editor", "word_wrap", cfg->word_wrap);
+  g_key_file_set_boolean(keyfile, "Editor", "auto_reload", cfg->auto_reload);
 
   data = g_key_file_to_data(keyfile, &length, &error);
   if (error) {
