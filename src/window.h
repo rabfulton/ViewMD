@@ -11,6 +11,7 @@ typedef struct _MarkydWindow {
   GtkWidget *header_bar;
   GtkWidget *btn_open;
   GtkWidget *btn_refresh;
+  GtkWidget *btn_search;
   GtkWidget *btn_settings;
   GtkWidget *search_revealer;
   GtkWidget *search_entry;
@@ -23,6 +24,7 @@ typedef struct _MarkydWindow {
   MarkydApp *app;
   GArray *search_matches;
   gint search_current_index;
+  gdouble zoom_accumulator;
 } MarkydWindow;
 
 /* Lifecycle */

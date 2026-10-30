@@ -9,6 +9,7 @@ static gboolean on_motion_notify(GtkWidget *widget, GdkEventMotion *event,
                                  gpointer user_data);
 static gboolean on_leave_notify(GtkWidget *widget, GdkEventCrossing *event,
                                 gpointer user_data);
+static void on_text_view_destroyed(GtkWidget *widget, gpointer user_data);
 static void apply_markdown(MarkydEditor *self);
 static void schedule_markdown_apply(MarkydEditor *self);
 static void render_image_widgets(MarkydEditor *self);
@@ -133,7 +134,7 @@ static void set_link_cursor(MarkydEditor *self, gboolean active) {
 }
 
 static void apply_markdown(MarkydEditor *self) {
-  if (!self) {
+  if (!self || !self->buffer || !self->text_view) {
     return;
   }
 
@@ -383,6 +384,8 @@ MarkydEditor *markyd_editor_new(MarkydApp *app) {
   self->markdown_idle_id = 0;
 
   self->text_view = gtk_text_view_new();
+  g_object_add_weak_pointer(G_OBJECT(self->text_view),
+                            (gpointer *)&self->text_view);
   gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(self->text_view),
                               GTK_WRAP_WORD_CHAR);
   gtk_text_view_set_left_margin(GTK_TEXT_VIEW(self->text_view), 16);
@@ -404,6 +407,8 @@ MarkydEditor *markyd_editor_new(MarkydApp *app) {
                    G_CALLBACK(on_motion_notify), self);
   g_signal_connect(self->text_view, "leave-notify-event",
                    G_CALLBACK(on_leave_notify), self);
+  g_signal_connect(self->text_view, "destroy",
+                   G_CALLBACK(on_text_view_destroyed), self);
   g_signal_connect(self->text_view, "size-allocate",
                    G_CALLBACK(on_text_view_size_allocate), self);
 
@@ -418,9 +423,36 @@ static void on_text_view_size_allocate(GtkWidget *widget, GtkAllocation *allocat
   refresh_image_widget_scales(self);
 }
 
+static void on_text_view_destroyed(GtkWidget *widget, gpointer user_data) {
+  /* GtkTextView clears its buffer on dispose and then sets text targets.
+     It is no longer a drop destination after we unset it, which would warn;
+     mark it as one again while the widget is still alive. */
+  gtk_drag_dest_set(widget, 0, NULL, 0, 0);
+
+  MarkydEditor *self = (MarkydEditor *)user_data;
+  if (!self) {
+    return;
+  }
+  self->text_view = NULL;
+  self->buffer = NULL;
+  if (self->markdown_idle_id != 0) {
+    g_source_remove(self->markdown_idle_id);
+    self->markdown_idle_id = 0;
+  }
+}
+
 void markyd_editor_free(MarkydEditor *self) {
   if (!self) {
     return;
+  }
+  if (self->text_view) {
+    /* The window may destroy the text view after this editor is freed.
+       All view handlers carry this editor as user data, so disconnect them
+       before freeing. */
+    g_signal_handlers_disconnect_by_data(self->text_view, self);
+    g_object_remove_weak_pointer(G_OBJECT(self->text_view),
+                                 (gpointer *)&self->text_view);
+    self->text_view = NULL;
   }
   if (self->markdown_idle_id != 0) {
     g_source_remove(self->markdown_idle_id);
@@ -436,7 +468,12 @@ void markyd_editor_set_content(MarkydEditor *self, const gchar *content) {
   }
 
   g_free(self->source_content);
-  self->source_content = g_strdup(content ? content : "");
+  /* Guard against non-UTF-8 markdown (e.g. latin-1) crashing Pango later. */
+  if (content) {
+    self->source_content = g_utf8_make_valid(content, -1);
+  } else {
+    self->source_content = g_strdup("");
+  }
   schedule_markdown_apply(self);
 }
 

@@ -47,13 +47,20 @@ static void set_table_cell_highlight(GtkWidget *cell, gboolean match,
 static gboolean scroll_to_table_cell(MarkydWindow *self, GtkWidget *cell);
 static void show_search_ui(MarkydWindow *self);
 static void hide_search_ui(MarkydWindow *self);
+static void on_search_clicked(GtkButton *button, gpointer user_data);
 static gboolean on_key_press_event(GtkWidget *widget, GdkEventKey *event,
                                    gpointer user_data);
+static void on_drag_data_received(GtkWidget *widget, GdkDragContext *context,
+                                  gint x, gint y, GtkSelectionData *data,
+                                  guint info, guint time, gpointer user_data);
+static gboolean on_text_view_scroll(GtkWidget *widget, GdkEventScroll *event,
+                                    gpointer user_data);
 static gboolean on_configure_event(GtkWidget *widget, GdkEventConfigure *event,
                                    gpointer user_data);
 static gboolean on_window_state_event(GtkWidget *widget,
                                       GdkEventWindowState *event,
                                       gpointer user_data);
+static void on_window_destroyed(GtkWidget *widget, gpointer user_data);
 
 static void on_font_size_changed(GtkSpinButton *spin, gpointer user_data);
 static void on_font_family_changed(GtkComboBoxText *combo, gpointer user_data);
@@ -535,6 +542,20 @@ static void hide_search_ui(MarkydWindow *self) {
   markyd_editor_focus(self->editor);
 }
 
+static void on_search_clicked(GtkButton *button, gpointer user_data) {
+  MarkydWindow *self = (MarkydWindow *)user_data;
+
+  (void)button;
+  if (!self || !self->search_revealer) {
+    return;
+  }
+  if (gtk_revealer_get_reveal_child(GTK_REVEALER(self->search_revealer))) {
+    hide_search_ui(self);
+  } else {
+    show_search_ui(self);
+  }
+}
+
 static void on_search_changed(GtkEditable *editable, gpointer user_data) {
   MarkydWindow *self = (MarkydWindow *)user_data;
   (void)editable;
@@ -624,6 +645,14 @@ static void on_editor_buffer_changed(GtkTextBuffer *buffer, gpointer user_data) 
   update_search_matches(self);
 }
 
+static void setup_file_drop_target(GtkWidget *widget, MarkydWindow *self) {
+  GtkTargetEntry targets[] = {{"text/uri-list", 0, 0}};
+
+  gtk_drag_dest_set(widget, GTK_DEST_DEFAULT_ALL, targets, 1, GDK_ACTION_COPY);
+  g_signal_connect(widget, "drag-data-received",
+                   G_CALLBACK(on_drag_data_received), self);
+}
+
 MarkydWindow *markyd_window_new(MarkydApp *app) {
   MarkydWindow *self = g_new0(MarkydWindow, 1);
   GtkWidget *left_buttons;
@@ -633,6 +662,9 @@ MarkydWindow *markyd_window_new(MarkydApp *app) {
   self->app = app;
 
   self->window = gtk_application_window_new(app->gtk_app);
+  g_object_add_weak_pointer(G_OBJECT(self->window), (gpointer *)&self->window);
+  g_signal_connect(self->window, "destroy", G_CALLBACK(on_window_destroyed),
+                   self);
   gtk_window_set_title(GTK_WINDOW(self->window), "ViewMD");
 
   gtk_window_set_default_size(GTK_WINDOW(self->window), config->window_width,
@@ -660,6 +692,8 @@ MarkydWindow *markyd_window_new(MarkydApp *app) {
   g_signal_connect(self->window, "window-state-event",
                    G_CALLBACK(on_window_state_event), self);
 
+  setup_file_drop_target(self->window, self);
+
   self->header_bar = gtk_header_bar_new();
   gtk_header_bar_set_show_close_button(GTK_HEADER_BAR(self->header_bar), TRUE);
   gtk_window_set_titlebar(GTK_WINDOW(self->window), self->header_bar);
@@ -671,13 +705,19 @@ MarkydWindow *markyd_window_new(MarkydApp *app) {
 
   self->btn_open =
       gtk_button_new_from_icon_name("document-open-symbolic", GTK_ICON_SIZE_BUTTON);
-  gtk_widget_set_tooltip_text(self->btn_open, "Open Markdown Document");
+  gtk_widget_set_tooltip_text(self->btn_open, "Open a markdown document (Ctrl+O)");
   g_signal_connect(self->btn_open, "clicked", G_CALLBACK(on_open_clicked), self);
 
   self->btn_refresh =
       gtk_button_new_from_icon_name("view-refresh-symbolic", GTK_ICON_SIZE_BUTTON);
-  gtk_widget_set_tooltip_text(self->btn_refresh, "Reload Current Document");
+  gtk_widget_set_tooltip_text(self->btn_refresh, "Reload document (F5)");
   g_signal_connect(self->btn_refresh, "clicked", G_CALLBACK(on_refresh_clicked),
+                   self);
+
+  self->btn_search =
+      gtk_button_new_from_icon_name("edit-find-symbolic", GTK_ICON_SIZE_BUTTON);
+  gtk_widget_set_tooltip_text(self->btn_search, "Find in document (Ctrl+F)");
+  g_signal_connect(self->btn_search, "clicked", G_CALLBACK(on_search_clicked),
                    self);
 
   self->btn_settings =
@@ -689,6 +729,7 @@ MarkydWindow *markyd_window_new(MarkydApp *app) {
   left_buttons = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
   gtk_box_pack_start(GTK_BOX(left_buttons), self->btn_open, FALSE, FALSE, 0);
   gtk_box_pack_start(GTK_BOX(left_buttons), self->btn_refresh, FALSE, FALSE, 0);
+  gtk_box_pack_start(GTK_BOX(left_buttons), self->btn_search, FALSE, FALSE, 0);
   gtk_box_pack_start(GTK_BOX(left_buttons), self->btn_settings, FALSE, FALSE, 0);
   gtk_header_bar_pack_start(GTK_HEADER_BAR(self->header_bar), left_buttons);
 
@@ -745,6 +786,19 @@ MarkydWindow *markyd_window_new(MarkydApp *app) {
   self->editor = markyd_editor_new(app);
   gtk_container_add(GTK_CONTAINER(self->scroll),
                     markyd_editor_get_widget(self->editor));
+  g_signal_connect(self->editor->text_view, "scroll-event",
+                   G_CALLBACK(on_text_view_scroll), self);
+
+  /* The text view registers its own drop target (text/plain), stealing file
+     drops in the document area from the window; let the window handle them.
+     gtk_drag_dest_unset warns unless the widget is currently a destination,
+     so only unset what was set. */
+  if (gtk_drag_dest_get_target_list(self->editor->text_view) != NULL) {
+    gtk_drag_dest_unset(self->editor->text_view);
+  }
+  if (gtk_drag_dest_get_target_list(self->scroll) != NULL) {
+    gtk_drag_dest_unset(self->scroll);
+  }
   self->search_matches = g_array_new(FALSE, FALSE, sizeof(SearchMatch));
   self->search_current_index = -1;
   g_signal_connect(self->editor->buffer, "changed",
@@ -891,6 +945,7 @@ void markyd_window_free(MarkydWindow *self) {
 
   if (self->window) {
     gtk_widget_destroy(self->window);
+    self->window = NULL;
   }
 
   g_free(self);
@@ -1009,6 +1064,90 @@ static void on_settings_clicked(GtkButton *button, gpointer user_data) {
   gtk_widget_destroy(dialog);
 }
 
+static gboolean on_text_view_scroll(GtkWidget *widget, GdkEventScroll *event,
+                                    gpointer user_data) {
+  MarkydWindow *self = (MarkydWindow *)user_data;
+  gboolean zoom_in;
+  gint new_size;
+
+  (void)widget;
+  /* Font size is only adjusted on Ctrl+Scroll. */
+  if (!self || !event || (event->state & GDK_CONTROL_MASK) == 0) {
+    if (self) {
+      /* Do not carry a partial smooth-scroll delta into the next gesture. */
+      self->zoom_accumulator = 0.0;
+    }
+    return FALSE;
+  }
+
+  if (event->direction == GDK_SCROLL_SMOOTH) {
+    /* Touchpads emit many small smooth deltas. Accumulate them, so the font
+       steps once per unit of scroll distance instead of once per event. */
+    self->zoom_accumulator += event->delta_y;
+    if (self->zoom_accumulator <= -1.0) {
+      zoom_in = TRUE;
+      self->zoom_accumulator = 0.0;
+    } else if (self->zoom_accumulator >= 1.0) {
+      zoom_in = FALSE;
+      self->zoom_accumulator = 0.0;
+    } else {
+      return TRUE;
+    }
+  } else if (event->direction == GDK_SCROLL_UP) {
+    zoom_in = TRUE;
+    self->zoom_accumulator = 0.0;
+  } else if (event->direction == GDK_SCROLL_DOWN) {
+    zoom_in = FALSE;
+    self->zoom_accumulator = 0.0;
+  } else {
+    return FALSE;
+  }
+
+  new_size = config->font_size + (zoom_in ? 1 : -1);
+  if (new_size < 8) {
+    new_size = 8;
+  }
+  if (new_size > 48) {
+    new_size = 48;
+  }
+
+  if (new_size != config->font_size) {
+    config->font_size = new_size;
+    markyd_window_apply_css(self);
+  }
+  return TRUE;
+}
+
+static void on_drag_data_received(GtkWidget *widget, GdkDragContext *context,
+                                  gint x, gint y, GtkSelectionData *data,
+                                  guint info, guint time,
+                                  gpointer user_data) {
+  MarkydWindow *self = (MarkydWindow *)user_data;
+  gchar **uris;
+  gchar **uri;
+
+  (void)widget;
+  (void)x;
+  (void)y;
+  (void)info;
+
+  uris = gtk_selection_data_get_uris(data);
+  if (!uris) {
+    gtk_drag_finish(context, FALSE, FALSE, time);
+    return;
+  }
+  for (uri = uris; *uri != NULL; uri++) {
+    gchar *path = g_filename_from_uri(*uri, NULL, NULL);
+    if (!path) {
+      continue;
+    }
+    markyd_app_open_file(self->app, path);
+    g_free(path);
+  }
+  g_strfreev(uris);
+  gtk_drag_finish(context, TRUE, FALSE, time);
+}
+
 static gboolean on_key_press_event(GtkWidget *widget, GdkEventKey *event,
                                    gpointer user_data) {
   MarkydWindow *self = (MarkydWindow *)user_data;
@@ -1018,8 +1157,31 @@ static gboolean on_key_press_event(GtkWidget *widget, GdkEventKey *event,
   }
 
   if ((event->state & GDK_CONTROL_MASK) != 0 &&
+      (event->keyval == GDK_KEY_w || event->keyval == GDK_KEY_W)) {
+    gtk_window_close(GTK_WINDOW(widget));
+    return TRUE;
+  }
+
+  if ((event->state & GDK_CONTROL_MASK) != 0 &&
+      (event->keyval == GDK_KEY_q || event->keyval == GDK_KEY_Q)) {
+    gtk_window_close(GTK_WINDOW(widget));
+    return TRUE;
+  }
+
+  if ((event->state & GDK_CONTROL_MASK) != 0 &&
+      (event->keyval == GDK_KEY_o || event->keyval == GDK_KEY_O)) {
+    on_open_clicked(NULL, self);
+    return TRUE;
+  }
+
+  if ((event->state & GDK_CONTROL_MASK) != 0 &&
       (event->keyval == GDK_KEY_f || event->keyval == GDK_KEY_F)) {
     show_search_ui(self);
+    return TRUE;
+  }
+
+  if (event->keyval == GDK_KEY_F5) {
+    on_refresh_clicked(NULL, self);
     return TRUE;
   }
 
@@ -1119,6 +1281,14 @@ static gboolean on_configure_event(GtkWidget *widget, GdkEventConfigure *event,
   }
 
   return FALSE;
+}
+
+static void on_window_destroyed(GtkWidget *widget, gpointer user_data) {
+  MarkydWindow *self = (MarkydWindow *)user_data;
+  (void)widget;
+  if (self) {
+    self->window = NULL;
+  }
 }
 
 static gboolean on_window_state_event(GtkWidget *widget,
