@@ -255,6 +255,48 @@ static gboolean line_is_fence(const gchar *line, gsize len, gchar *fence_ch,
   return TRUE;
 }
 
+static gboolean line_is_front_matter_delimiter(const gchar *line, gsize len,
+                                               const gchar *delimiter) {
+  if (len < 3 || strncmp(line, delimiter, 3) != 0) {
+    return FALSE;
+  }
+  for (gsize i = 3; i < len; i++) {
+    if (line[i] != ' ' && line[i] != '\t' && line[i] != '\r') {
+      return FALSE;
+    }
+  }
+  return TRUE;
+}
+
+static const gchar *skip_front_matter(const gchar *source) {
+  const gchar *start = source;
+  const gchar *end;
+
+  /* A UTF-8 BOM may precede the opening delimiter. */
+  if (g_str_has_prefix(start, "\xEF\xBB\xBF")) {
+    start += 3;
+  }
+  end = strchr(start, '\n');
+  if (!end || !line_is_front_matter_delimiter(start, end - start, "---")) {
+    return source;
+  }
+
+  for (const gchar *line = end + 1; *line; line = end + 1) {
+    end = strchr(line, '\n');
+    gsize len = end ? (gsize)(end - line) : strlen(line);
+    if (line_is_front_matter_delimiter(line, len, "---") ||
+        line_is_front_matter_delimiter(line, len, "...")) {
+      return line + len + (end ? 1 : 0);
+    }
+    if (!end) {
+      break;
+    }
+  }
+
+  /* Do not hide anything unless the opening block has a closing delimiter. */
+  return source;
+}
+
 static gchar *normalize_markdown_source(const gchar *source) {
   const gchar *p;
   GString *out;
@@ -268,7 +310,7 @@ static gchar *normalize_markdown_source(const gchar *source) {
   }
 
   out = g_string_new(NULL);
-  p = source;
+  p = config->hide_front_matter ? skip_front_matter(source) : source;
 
   while (*p != '\0') {
     const gchar *line_start = p;

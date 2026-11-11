@@ -238,6 +238,110 @@ static void test_entities_in_headings_and_tables(void) {
   g_object_unref(buffer);
 }
 
+static void test_front_matter_closed(void) {
+  const gchar *prefixes[] = {
+    "---\ntitle: Hidden\ntags: [a, b]\n---\n",
+    "---\ntitle: Hidden\n...\n",
+    "---\r\ntitle: Hidden\r\n---\r\n",
+    "\xEF\xBB\xBF---\ntitle: Hidden\n---\n",
+    "--- \t\ntitle: Hidden\n... \t\n",
+    "---\n---\n",
+    "---\ntitle: |\n  ---\n  Indented delimiter\n---\n"
+  };
+  const gchar *body = "# Visible\n\nA **bold** paragraph.\n\n---\n\nEnd.";
+  GtkTextBuffer *expected = new_buffer();
+  markdown_apply_tags(expected, body);
+  gchar *text = buffer_text(expected);
+  GtkTextBuffer *buffer = new_buffer();
+  for (guint i = 0; i < G_N_ELEMENTS(prefixes); i++) {
+    gchar *source = g_strconcat(prefixes[i], body, NULL);
+    markdown_apply_tags(buffer, source);
+    assert_text(buffer, text);
+    g_assert_nonnull(gtk_text_buffer_get_mark(buffer, "viewmd-anchor-visible"));
+    g_free(source);
+  }
+  g_free(text);
+  g_object_unref(expected);
+  g_object_unref(buffer);
+}
+
+static void test_front_matter_only(void) {
+  const gchar *sources[] = {
+    "---\ntitle: Hidden\n---",
+    "---\ntitle: Hidden\n...",
+    "---\n---\n",
+    "---\ntitle: Hidden\n---\n\n"
+  };
+  GtkTextBuffer *buffer = new_buffer();
+  for (guint i = 0; i < G_N_ELEMENTS(sources); i++) {
+    markdown_apply_tags(buffer, sources[i]);
+    assert_text(buffer, "");
+  }
+  g_object_unref(buffer);
+}
+
+static void test_front_matter_boundaries(void) {
+  const gchar *sources[] = {
+    "---\ntitle: Keep", /* No closing delimiter. */
+    "---\ntitle: Keep\n----\n",
+    "---\ntitle: Keep\n... trailing text\n",
+    "---\ntitle: Keep\n  ---\n", /* Indented YAML content is not a delimiter. */
+    "\n---\ntitle: Keep\n---\n", /* Opening must be on the first line. */
+    "Intro\n\n---\ntitle: Keep\n---\n",
+    " ---\ntitle: Keep\n---\n",
+    "----\ntitle: Keep\n---\n",
+    "--- trailing text\ntitle: Keep\n---\n"
+  };
+  GtkTextBuffer *buffer = new_buffer();
+  for (guint i = 0; i < G_N_ELEMENTS(sources); i++) {
+    markdown_apply_tags(buffer, sources[i]);
+    gchar *text = buffer_text(buffer);
+    g_assert_nonnull(strstr(text, "title: Keep"));
+    g_free(text);
+  }
+  markdown_apply_tags(buffer, "---\n\nBody");
+  assert_text(buffer, "──────\n\nBody");
+  markdown_apply_tags(buffer, "---");
+  assert_text(buffer, "──────\n\n");
+  g_object_unref(buffer);
+}
+
+static void test_front_matter_in_code(void) {
+  GtkTextBuffer *buffer = new_buffer();
+  markdown_apply_tags(buffer, "```yaml\n---\ntitle: Keep\n---\n```\n");
+  assert_text(buffer, "---\ntitle: Keep\n---\n");
+  g_object_unref(buffer);
+}
+
+static void test_front_matter_reload(void) {
+  GtkTextBuffer *buffer = new_buffer();
+  markdown_apply_tags(buffer, "# Hidden\n\n[Old](#hidden)");
+  markdown_apply_tags(buffer, "---\n# Hidden\n[Old](#hidden)\n---\n# Visible\n");
+  assert_text(buffer, "Visible\n");
+  g_assert_null(gtk_text_buffer_get_mark(buffer, "viewmd-anchor-hidden"));
+  g_assert_nonnull(gtk_text_buffer_get_mark(buffer, "viewmd-anchor-visible"));
+  markdown_apply_tags(buffer, "# Restored\n");
+  assert_text(buffer, "Restored\n");
+  g_object_unref(buffer);
+}
+
+static void test_front_matter_setting(void) {
+  GtkTextBuffer *buffer = new_buffer();
+  const gchar *source = "---\ntitle: Metadata\n---\n# Body\n";
+  g_assert_true(config->hide_front_matter);
+  markdown_apply_tags(buffer, source);
+  assert_text(buffer, "Body\n");
+  config->hide_front_matter = FALSE;
+  markdown_apply_tags(buffer, source);
+  assert_text(buffer, "──────\n\ntitle: Metadata\n\n──────\n\nBody\n");
+  markdown_apply_tags(buffer, "---\n---\n# Body\n");
+  assert_text(buffer, "──────\n\n──────\n\nBody\n");
+  config->hide_front_matter = TRUE;
+  markdown_apply_tags(buffer, source);
+  assert_text(buffer, "Body\n");
+  g_object_unref(buffer);
+}
+
 int main(int argc, char **argv) {
   g_test_init(&argc, &argv, NULL);
   gtk_init_check(&argc, &argv);
@@ -263,6 +367,12 @@ int main(int argc, char **argv) {
   g_test_add_func("/markdown/entities/code", test_entities_in_code);
   g_test_add_func("/markdown/entities/attributes", test_entity_attributes);
   g_test_add_func("/markdown/entities/headings-and-tables", test_entities_in_headings_and_tables);
+  g_test_add_func("/markdown/front-matter/closed", test_front_matter_closed);
+  g_test_add_func("/markdown/front-matter/only", test_front_matter_only);
+  g_test_add_func("/markdown/front-matter/boundaries", test_front_matter_boundaries);
+  g_test_add_func("/markdown/front-matter/code", test_front_matter_in_code);
+  g_test_add_func("/markdown/front-matter/reload", test_front_matter_reload);
+  g_test_add_func("/markdown/front-matter/setting", test_front_matter_setting);
   gint result = g_test_run();
   config_free(config);
   return result;

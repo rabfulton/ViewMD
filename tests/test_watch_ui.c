@@ -73,10 +73,9 @@ static void test_scroll_position(Fixture *fixture, gconstpointer unused) {
   g_free(changed);
 }
 
-static GtkWidget *find_toggle(GtkWidget *widget) {
+static GtkWidget *find_toggle(GtkWidget *widget, const gchar *label) {
   if (GTK_IS_CHECK_BUTTON(widget) &&
-      g_strcmp0(gtk_button_get_label(GTK_BUTTON(widget)),
-                "Automatically reload changed files") == 0) {
+      g_strcmp0(gtk_button_get_label(GTK_BUTTON(widget)), label) == 0) {
     return widget;
   }
   if (!GTK_IS_CONTAINER(widget))
@@ -84,12 +83,13 @@ static GtkWidget *find_toggle(GtkWidget *widget) {
   GList *children = gtk_container_get_children(GTK_CONTAINER(widget));
   GtkWidget *result = NULL;
   for (GList *item = children; item && !result; item = item->next)
-    result = find_toggle(item->data);
+    result = find_toggle(item->data, label);
   g_list_free(children);
   return result;
 }
 
 typedef struct {
+  const gchar *label;
   gboolean enabled;
   gint response;
 } DialogResponse;
@@ -101,11 +101,13 @@ static gboolean respond_to_settings(gpointer data) {
   for (GList *item = windows; item; item = item->next) {
     if (GTK_IS_DIALOG(item->data) &&
         g_strcmp0(gtk_window_get_title(item->data), "ViewMD Settings") == 0) {
-      GtkWidget *toggle = find_toggle(item->data);
+      GtkWidget *toggle = find_toggle(item->data, response->label);
       g_assert_nonnull(toggle);
       gboolean previous = config->auto_reload;
+      gboolean previous_front_matter = config->hide_front_matter;
       gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(toggle), response->enabled);
       g_assert_cmpint(config->auto_reload, ==, previous);
+      g_assert_cmpint(config->hide_front_matter, ==, previous_front_matter);
       gtk_dialog_response(GTK_DIALOG(item->data), response->response);
       found = TRUE;
       break;
@@ -116,25 +118,67 @@ static gboolean respond_to_settings(gpointer data) {
   return G_SOURCE_REMOVE;
 }
 
-static void change_setting(Fixture *fixture, gboolean enabled, gint response) {
-  DialogResponse action = {enabled, response};
+static void change_setting(Fixture *fixture, const gchar *label,
+                           gboolean enabled, gint response) {
+  DialogResponse action = {label, enabled, response};
   g_timeout_add(50, respond_to_settings, &action);
   g_signal_emit_by_name(fixture->application->window->btn_settings, "clicked");
 }
 
 static void test_settings(Fixture *fixture, gconstpointer unused) {
   (void)unused;
-  change_setting(fixture, FALSE, GTK_RESPONSE_CANCEL);
+  change_setting(fixture, "Automatically reload changed files", FALSE,
+                  GTK_RESPONSE_CANCEL);
   g_assert_true(config->auto_reload);
   g_assert_nonnull(fixture->application->file_monitor);
-  change_setting(fixture, FALSE, GTK_RESPONSE_APPLY);
+  change_setting(fixture, "Automatically reload changed files", FALSE,
+                  GTK_RESPONSE_APPLY);
   g_assert_false(config->auto_reload);
   g_assert_null(fixture->application->file_monitor);
   MarkydConfig *saved = config_new();
   g_assert_true(config_load(saved));
   g_assert_false(saved->auto_reload);
   config_free(saved);
-  change_setting(fixture, TRUE, GTK_RESPONSE_APPLY);
+  change_setting(fixture, "Automatically reload changed files", TRUE,
+                  GTK_RESPONSE_APPLY);
+  g_assert_true(config->auto_reload);
+  g_assert_nonnull(fixture->application->file_monitor);
+}
+
+static void assert_front_matter_hidden(MarkydEditor *editor, gboolean hidden) {
+  GtkTextIter start, end;
+  gtk_text_buffer_get_bounds(editor->buffer, &start, &end);
+  gchar *text = gtk_text_buffer_get_text(editor->buffer, &start, &end, FALSE);
+  g_assert_nonnull(strstr(text, "Body"));
+  g_assert_cmpint(strstr(text, "title: Metadata") == NULL, ==, hidden);
+  g_free(text);
+}
+
+static void test_front_matter_settings(Fixture *fixture, gconstpointer unused) {
+  (void)unused;
+  MarkydEditor *editor = fixture->application->editor;
+  const gchar *source = "---\ntitle: Metadata\n---\n# Body\n";
+  markyd_editor_set_content(editor, source);
+  pump(50);
+  g_assert_true(config->hide_front_matter);
+  assert_front_matter_hidden(editor, TRUE);
+  change_setting(fixture, "Hide YAML front matter", FALSE, GTK_RESPONSE_CANCEL);
+  pump(50);
+  g_assert_true(config->hide_front_matter);
+  assert_front_matter_hidden(editor, TRUE);
+  change_setting(fixture, "Hide YAML front matter", FALSE, GTK_RESPONSE_APPLY);
+  pump(50);
+  g_assert_false(config->hide_front_matter);
+  assert_front_matter_hidden(editor, FALSE);
+  MarkydConfig *saved = config_new();
+  g_assert_true(config_load(saved));
+  g_assert_false(saved->hide_front_matter);
+  config_free(saved);
+  change_setting(fixture, "Hide YAML front matter", TRUE, GTK_RESPONSE_APPLY);
+  pump(50);
+  g_assert_true(config->hide_front_matter);
+  assert_front_matter_hidden(editor, TRUE);
+  g_assert_cmpstr(editor->source_content, ==, source);
   g_assert_true(config->auto_reload);
   g_assert_nonnull(fixture->application->file_monitor);
 }
@@ -167,6 +211,7 @@ int main(int argc, char **argv) {
   g_test_add("/watch-ui/" name, Fixture, NULL, setup, function, teardown)
   ADD_TEST("scroll-position", test_scroll_position);
   ADD_TEST("settings-apply-cancel", test_settings);
+  ADD_TEST("front-matter-settings", test_front_matter_settings);
   ADD_TEST("pending-restore-cleanup", test_pending_restore_cleanup);
   gint result = g_test_run();
   g_object_unref(test_application);

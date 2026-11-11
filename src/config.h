@@ -27,6 +27,7 @@ typedef struct _MarkydConfig {
   gboolean line_numbers;
   gboolean word_wrap;
   gboolean auto_reload;
+  gboolean hide_front_matter;
 } MarkydConfig;
 
 /* Global config instance */

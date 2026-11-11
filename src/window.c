@@ -15,6 +15,7 @@ typedef struct {
 #define TAG_SEARCH_MATCH "viewmd_search_match"
 #define TAG_SEARCH_CURRENT "viewmd_search_current"
 #define AUTO_RELOAD_TOGGLE_DATA "viewmd-auto-reload-toggle"
+#define HIDE_FRONT_MATTER_TOGGLE_DATA "viewmd-hide-front-matter-toggle"
 
 static void on_open_clicked(GtkButton *button, gpointer user_data);
 static void on_refresh_clicked(GtkButton *button, gpointer user_data);
@@ -1058,6 +1059,9 @@ static void on_settings_clicked(GtkButton *button, gpointer user_data) {
   if (response == GTK_RESPONSE_APPLY || response == GTK_RESPONSE_OK) {
     GtkWidget *toggle = g_object_get_data(G_OBJECT(dialog), AUTO_RELOAD_TOGGLE_DATA);
     config->auto_reload = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(toggle));
+    toggle = g_object_get_data(G_OBJECT(dialog), HIDE_FRONT_MATTER_TOGGLE_DATA);
+    config->hide_front_matter =
+        gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(toggle));
     markyd_app_update_file_watch(self->app);
     config_save(config);
     markyd_window_apply_css(self);
@@ -1356,6 +1360,7 @@ static GtkWidget *create_settings_dialog(MarkydApp *app) {
   GtkWidget *font_size_spin;
   GtkWidget *theme_combo;
   GtkWidget *auto_reload_toggle;
+  GtkWidget *hide_front_matter_toggle;
   GtkWidget *h1_color_btn;
   GtkWidget *h2_color_btn;
   GtkWidget *h3_color_btn;
@@ -1450,6 +1455,14 @@ static GtkWidget *create_settings_dialog(MarkydApp *app) {
                                config->auto_reload);
   gtk_grid_attach(GTK_GRID(grid), auto_reload_toggle, 0, row++, 2, 1);
   g_object_set_data(G_OBJECT(dialog), AUTO_RELOAD_TOGGLE_DATA, auto_reload_toggle);
+
+  hide_front_matter_toggle =
+      gtk_check_button_new_with_label("Hide YAML front matter");
+  gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(hide_front_matter_toggle),
+                               config->hide_front_matter);
+  gtk_grid_attach(GTK_GRID(grid), hide_front_matter_toggle, 0, row++, 2, 1);
+  g_object_set_data(G_OBJECT(dialog), HIDE_FRONT_MATTER_TOGGLE_DATA,
+                    hide_front_matter_toggle);
 
   {
     GtkWidget *separator = gtk_separator_new(GTK_ORIENTATION_HORIZONTAL);

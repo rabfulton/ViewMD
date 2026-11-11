@@ -32,6 +32,7 @@ MarkydConfig *config_new(void) {
   cfg->line_numbers = FALSE;
   cfg->word_wrap = TRUE;
   cfg->auto_reload = TRUE;
+  cfg->hide_front_matter = TRUE;
 
   return cfg;
 }
@@ -105,7 +106,14 @@ gboolean config_load(MarkydConfig *cfg) {
     cfg->theme = g_key_file_get_string(keyfile, "Appearance", "theme", NULL);
   }
 
-  /* Markdown accents */
+  /* Markdown */
+  if (g_key_file_has_key(keyfile, "Markdown", "hide_front_matter", NULL)) {
+    gboolean hide_front_matter =
+        g_key_file_get_boolean(keyfile, "Markdown", "hide_front_matter", &error);
+    if (!error)
+      cfg->hide_front_matter = hide_front_matter;
+    g_clear_error(&error);
+  }
   if (g_key_file_has_key(keyfile, "Markdown", "h1_color", NULL)) {
     g_free(cfg->h1_color);
     cfg->h1_color =
@@ -165,7 +173,9 @@ gboolean config_save(MarkydConfig *cfg) {
   g_key_file_set_integer(keyfile, "Appearance", "font_size", cfg->font_size);
   g_key_file_set_string(keyfile, "Appearance", "theme", cfg->theme);
 
-  /* Markdown accents */
+  /* Markdown */
+  g_key_file_set_boolean(keyfile, "Markdown", "hide_front_matter",
+                         cfg->hide_front_matter);
   g_key_file_set_string(keyfile, "Markdown", "h1_color", cfg->h1_color);
   g_key_file_set_string(keyfile, "Markdown", "h2_color", cfg->h2_color);
   g_key_file_set_string(keyfile, "Markdown", "h3_color", cfg->h3_color);

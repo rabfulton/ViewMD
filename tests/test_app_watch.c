@@ -102,28 +102,36 @@ static void open_document(Fixture *fixture) {
 static void test_preference(Fixture *fixture, gconstpointer unused) {
   (void)fixture; (void)unused;
   g_assert_true(config->auto_reload);
+  g_assert_true(config->hide_front_matter);
   config->auto_reload = FALSE;
+  config->hide_front_matter = FALSE;
   g_assert_true(config_save(config));
   MarkydConfig *loaded = config_new();
   g_assert_true(config_load(loaded));
   g_assert_false(loaded->auto_reload);
+  g_assert_false(loaded->hide_front_matter);
   config_free(loaded);
   config->auto_reload = TRUE;
+  config->hide_front_matter = TRUE;
   g_assert_true(config_save(config));
   loaded = config_new();
   g_assert_true(config_load(loaded));
   g_assert_true(loaded->auto_reload);
+  g_assert_true(loaded->hide_front_matter);
   config_free(loaded);
 
   write_file(config_get_path(), "[Appearance]\ntheme=light\n");
   loaded = config_new();
   g_assert_true(config_load(loaded));
   g_assert_true(loaded->auto_reload);
+  g_assert_true(loaded->hide_front_matter);
   config_free(loaded);
-  write_file(config_get_path(), "[Editor]\nauto_reload=invalid\n");
+  write_file(config_get_path(), "[Editor]\nauto_reload=invalid\n"
+                                "[Markdown]\nhide_front_matter=invalid\n");
   loaded = config_new();
   g_assert_true(config_load(loaded));
   g_assert_true(loaded->auto_reload);
+  g_assert_true(loaded->hide_front_matter);
   config_free(loaded);
 }
 

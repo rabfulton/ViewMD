@@ -35,6 +35,14 @@ A lightweight GTK 3 markdown viewer for desktop Linux. It is ideal as your defau
 
 Code blocks currently support a beta version of keyword highlighting for fenced languages `c`, `java`, and `python`.
 
+YAML front matter is hidden from the preview by default. To display it as ordinary
+Markdown, turn off **Hide YAML front matter** in Settings and click **Apply**.
+The preference is saved between sessions. A block must open with `---` on
+the first line (optionally after a UTF-8 BOM) and close with `---` or `...` on
+its own line. Unclosed blocks and delimiters later in the document are rendered
+as ordinary Markdown. A pair of `---` delimiters at the start is interpreted as
+front matter; use `***` for a leading horizontal rule when that would be ambiguous.
+
 ## Installation
 
 ### Arch Linux (AUR)
