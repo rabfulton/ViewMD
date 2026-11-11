@@ -1529,14 +1529,15 @@ GtkWidget *markdown_create_table_widget(GtkTextChildAnchor *anchor) {
   gtk_style_context_add_class(gtk_widget_get_style_context(wrapper),
                               "viewmd-table");
   gtk_widget_set_halign(wrapper, GTK_ALIGN_START);
-  gtk_widget_set_margin_top(wrapper, 6);
-  gtk_widget_set_margin_bottom(wrapper, 6);
-  gtk_widget_set_margin_start(wrapper, 8);
-  gtk_widget_set_margin_end(wrapper, 8);
 
   grid = gtk_grid_new();
   gtk_style_context_add_class(gtk_widget_get_style_context(grid),
                               "viewmd-table-grid");
+  /* Keep spacing inside the child: GtkTextView reallocates the anchor widget. */
+  gtk_widget_set_margin_top(grid, 6);
+  gtk_widget_set_margin_bottom(grid, 6);
+  gtk_widget_set_margin_start(grid, 8);
+  gtk_widget_set_margin_end(grid, 8);
   gtk_grid_set_row_spacing(GTK_GRID(grid), 0);
   gtk_grid_set_column_spacing(GTK_GRID(grid), 0);
   gtk_box_pack_start(GTK_BOX(wrapper), grid, TRUE, TRUE, 0);
