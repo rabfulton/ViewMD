@@ -328,6 +328,68 @@ static void render_image_widgets(MarkydEditor *self) {
   }
 }
 
+static gboolean scroll_to_footnote_cell(MarkydEditor *self, GtkTextMark *mark,
+                                        GtkTextIter *iter) {
+  if (!g_object_get_data(G_OBJECT(mark), VIEWMD_FOOTNOTE_TABLE_REF_DATA))
+    return FALSE;
+  GtkTextChildAnchor *anchor = gtk_text_iter_get_child_anchor(iter);
+  GtkWidget *table = anchor ? g_object_get_data(G_OBJECT(anchor), VIEWMD_TABLE_WIDGET_DATA) : NULL;
+  if (!table)
+    return FALSE;
+  GList *children = gtk_container_get_children(GTK_CONTAINER(table));
+  GtkWidget *grid = children ? children->data : NULL;
+  g_list_free(children);
+  if (!GTK_IS_GRID(grid))
+    return FALSE;
+  gint row = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(mark), VIEWMD_TABLE_CELL_ROW_DATA));
+  gint col = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(mark), VIEWMD_TABLE_CELL_COL_DATA));
+  GtkWidget *cell = gtk_grid_get_child_at(GTK_GRID(grid), col, row);
+  GtkWidget *scroll = gtk_widget_get_ancestor(self->text_view, GTK_TYPE_SCROLLED_WINDOW);
+  gint x, y;
+  if (!cell || !scroll || !gtk_widget_translate_coordinates(cell, scroll, 0, 0, &x, &y))
+    return FALSE;
+  GtkAdjustment *vadj = gtk_scrollable_get_vadjustment(GTK_SCROLLABLE(self->text_view));
+  GtkAdjustment *hadj = gtk_scrollable_get_hadjustment(GTK_SCROLLABLE(self->text_view));
+  gtk_adjustment_set_value(vadj, MAX(0, gtk_adjustment_get_value(vadj) + y -
+                                        gtk_adjustment_get_page_size(vadj) / 4));
+  gtk_adjustment_clamp_page(hadj, gtk_adjustment_get_value(hadj) + x,
+      gtk_adjustment_get_value(hadj) + x + gtk_widget_get_allocated_width(cell));
+  return TRUE;
+}
+
+gboolean markyd_editor_follow_footnote(MarkydEditor *self, const gchar *uri) {
+  if (!g_str_has_prefix(uri, "viewmd-footnote:"))
+    return FALSE;
+  GtkTextMark *mark = gtk_text_buffer_get_mark(self->buffer, uri);
+  if (mark) {
+    GtkTextIter iter;
+    gtk_text_buffer_get_iter_at_mark(self->buffer, &iter, mark);
+    gtk_text_buffer_place_cursor(self->buffer, &iter);
+    if (!scroll_to_footnote_cell(self, mark, &iter))
+      gtk_text_view_scroll_to_mark(GTK_TEXT_VIEW(self->text_view), mark, 0.2,
+                                   FALSE, 0.0, 0.0);
+  }
+  return TRUE;
+}
+
+static gboolean on_table_footnote_link(GtkLabel *label, const gchar *uri,
+                                      gpointer data) {
+  (void)label;
+  return markyd_editor_follow_footnote(data, uri);
+}
+
+static void connect_table_footnotes(GtkWidget *widget, MarkydEditor *self) {
+  if (GTK_IS_LABEL(widget)) {
+    gtk_label_set_track_visited_links(GTK_LABEL(widget), FALSE);
+    g_signal_connect(widget, "activate-link", G_CALLBACK(on_table_footnote_link), self);
+  } else if (GTK_IS_CONTAINER(widget)) {
+    GList *children = gtk_container_get_children(GTK_CONTAINER(widget));
+    for (GList *item = children; item; item = item->next)
+      connect_table_footnotes(item->data, self);
+    g_list_free(children);
+  }
+}
+
 static void render_table_widgets(MarkydEditor *self) {
   GtkTextIter iter;
   GtkTextIter end;
@@ -346,6 +408,7 @@ static void render_table_widgets(MarkydEditor *self) {
       if (!table) {
         table = markdown_create_table_widget(anchor);
         if (table) {
+          connect_table_footnotes(table, self);
           gtk_text_view_add_child_at_anchor(GTK_TEXT_VIEW(self->text_view), table,
                                             anchor);
           gtk_widget_show_all(table);
@@ -397,6 +460,24 @@ static void schedule_markdown_apply(MarkydEditor *self) {
 
 void markyd_editor_refresh(MarkydEditor *self) { schedule_markdown_apply(self); }
 
+static void on_text_view_style_updated(GtkWidget *widget, gpointer data) {
+  MarkydEditor *self = data;
+  if (!self->buffer)
+    return;
+  GtkTextTag *tag = gtk_text_tag_table_lookup(
+      gtk_text_buffer_get_tag_table(self->buffer), VIEWMD_FOOTNOTE_REFERENCE_TAG);
+  if (!tag)
+    return;
+  PangoContext *context = gtk_widget_get_pango_context(widget);
+  PangoFontMetrics *metrics = pango_context_get_metrics(context,
+      pango_context_get_font_description(context), pango_context_get_language(context));
+  /* Rise is in Pango units. Following the actual font metrics also handles DPI
+   * changes, font selection and Ctrl+wheel zoom without rerendering the text. */
+  gint rise = MAX(PANGO_SCALE, (gint)(pango_font_metrics_get_ascent(metrics) * 0.45));
+  pango_font_metrics_unref(metrics);
+  g_object_set(tag, "rise", rise, NULL);
+}
+
 MarkydEditor *markyd_editor_new(MarkydApp *app) {
   MarkydEditor *self = g_new0(MarkydEditor, 1);
 
@@ -419,6 +500,9 @@ MarkydEditor *markyd_editor_new(MarkydApp *app) {
 
   self->buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(self->text_view));
   markdown_init_tags(self->buffer);
+  g_signal_connect(self->text_view, "style-updated",
+                   G_CALLBACK(on_text_view_style_updated), self);
+  on_text_view_style_updated(self->text_view, self);
 
   gtk_widget_add_events(self->text_view, GDK_POINTER_MOTION_MASK |
                                             GDK_LEAVE_NOTIFY_MASK |
@@ -572,6 +656,11 @@ static gboolean on_button_release(GtkWidget *widget, GdkEventButton *event,
 
   if (!get_link_url_at_iter(self->buffer, &iter, &url)) {
     return FALSE;
+  }
+
+  if (markyd_editor_follow_footnote(self, url)) {
+    g_free(url);
+    return TRUE;
   }
 
   if (url[0] == '#') {

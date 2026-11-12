@@ -3,6 +3,7 @@
 #include "config.h"
 #include "md4c/md4c.h"
 #include "html_entities.h"
+#include "footnotes.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -24,6 +25,8 @@
 #define TAG_TABLE_HEADER "table_header"
 #define TAG_TABLE_SEPARATOR "table_separator"
 #define TAG_INVISIBLE "invisible"
+#define TAG_FOOTNOTE_REFERENCE VIEWMD_FOOTNOTE_REFERENCE_TAG
+#define TAG_FOOTNOTE_LINK "footnote_link"
 #define TABLE_MODEL_DATA_KEY "viewmd-table-model"
 #define RENDER_STATE_DATA_KEY "viewmd-render-state"
 
@@ -50,6 +53,7 @@ typedef struct {
 typedef struct {
   MD_SPANTYPE type;
   guint pushed_tags;
+  const FootnoteLink *footnote;
 } SpanState;
 
 typedef struct {
@@ -96,6 +100,11 @@ typedef struct {
   const MarkydLanguageHighlight *current_code_language;
   gboolean has_output;
   guint trailing_newlines;
+  FootnoteDocument *footnotes;
+  gboolean footnote_body_start;
+  gint paragraph_start_offset;
+  gint paragraph_content_offset;
+  guint paragraph_previous_newlines;
 } RenderCtx;
 
 static void render_state_free(gpointer data) {
@@ -796,22 +805,34 @@ static void table_capture_append(RenderCtx *ctx, const gchar *text) {
   g_free(escaped);
 }
 
+static void collect_markup_text(GMarkupParseContext *context, const gchar *text,
+                                gsize length, gpointer data, GError **error) {
+  (void)context;
+  (void)error;
+  g_string_append_len(data, text, length);
+}
+
 static gchar *table_cell_markup_to_plain(const gchar *markup) {
-  gchar *plain = NULL;
   GError *error = NULL;
 
   if (!markup || markup[0] == '\0') {
     return g_strdup("");
   }
 
-  if (pango_parse_markup(markup, -1, 0, NULL, &plain, NULL, &error)) {
-    return plain;
-  }
-
-  if (error) {
-    g_error_free(error);
-  }
-  return g_strdup(markup);
+  /* GtkLabel accepts <a> in addition to Pango markup. Keep its links searchable. */
+  GString *plain = g_string_new(NULL);
+  GMarkupParser parser = {0};
+  parser.text = collect_markup_text;
+  GMarkupParseContext *context = g_markup_parse_context_new(&parser, 0, plain, NULL);
+  gchar *wrapped = g_strconcat("<root>", markup, "</root>", NULL);
+  gboolean valid = g_markup_parse_context_parse(context, wrapped, -1, &error) &&
+                   g_markup_parse_context_end_parse(context, &error);
+  g_clear_error(&error);
+  g_markup_parse_context_free(context);
+  g_free(wrapped);
+  if (!valid)
+    g_string_assign(plain, markup);
+  return g_string_free(plain, FALSE);
 }
 
 static void table_search_index_free(gpointer data) {
@@ -1090,6 +1111,9 @@ static void insert_list_marker(RenderCtx *ctx, const MD_BLOCK_LI_DETAIL *detail)
 static int on_enter_block(MD_BLOCKTYPE type, void *detail, void *userdata) {
   RenderCtx *ctx = (RenderCtx *)userdata;
   BlockState state = {type, 0};
+  gboolean join_footnote_body = ctx->footnote_body_start && type == MD_BLOCK_P;
+  if (type != MD_BLOCK_DOC)
+    ctx->footnote_body_start = FALSE;
 
   g_array_append_val(ctx->block_stack, state);
 
@@ -1098,11 +1122,16 @@ static int on_enter_block(MD_BLOCKTYPE type, void *detail, void *userdata) {
     break;
 
   case MD_BLOCK_P:
-    if (ctx->list_item_prefix_pending) {
+    ctx->paragraph_start_offset = gtk_text_iter_get_offset(&ctx->iter);
+    ctx->paragraph_previous_newlines = ctx->trailing_newlines;
+    if (join_footnote_body) {
+      /* The plain numeric label already supplies the paragraph prefix. */
+    } else if (ctx->list_item_prefix_pending) {
       ctx->list_item_prefix_pending = FALSE;
     } else {
       ensure_newlines(ctx, (ctx->list_stack->len > 0) ? 1 : 2);
     }
+    ctx->paragraph_content_offset = gtk_text_iter_get_offset(&ctx->iter);
     break;
 
   case MD_BLOCK_H: {
@@ -1290,12 +1319,82 @@ static int on_leave_block(MD_BLOCKTYPE type, void *detail, void *userdata) {
   return 0;
 }
 
+static void create_footnote_mark(RenderCtx *ctx, const gchar *name) {
+  if (!name)
+    return;
+  GtkTextMark *mark = gtk_text_buffer_create_mark(ctx->buffer, name, &ctx->iter, TRUE);
+  if (ctx->table_cell_text) {
+    g_object_set_data(G_OBJECT(mark), VIEWMD_FOOTNOTE_TABLE_REF_DATA, GINT_TO_POINTER(1));
+    g_object_set_data(G_OBJECT(mark), VIEWMD_TABLE_CELL_ROW_DATA,
+                      GUINT_TO_POINTER(ctx->table_model->rows->len - 1));
+    g_object_set_data(G_OBJECT(mark), VIEWMD_TABLE_CELL_COL_DATA,
+                      GUINT_TO_POINTER(ctx->table_current_col));
+  }
+  g_ptr_array_add(ctx->render_state->anchor_marks, g_object_ref(mark));
+}
+
+static void join_footnote_backlink(RenderCtx *ctx) {
+  if (gtk_text_iter_get_offset(&ctx->iter) != ctx->paragraph_content_offset)
+    return;
+  /* Remove only spacing inserted for the backlink's synthetic paragraph. Keep
+   * real line breaks belonging to a code block or list at the end of a note. */
+  GtkTextIter start;
+  gtk_text_buffer_get_iter_at_offset(ctx->buffer, &start, ctx->paragraph_start_offset);
+  gtk_text_buffer_delete(ctx->buffer, &start, &ctx->iter);
+  ctx->trailing_newlines = ctx->paragraph_previous_newlines;
+  if (!ctx->trailing_newlines)
+    insert_cstr(ctx, " ");
+}
+
 static int on_enter_span(MD_SPANTYPE type, void *detail, void *userdata) {
   RenderCtx *ctx = (RenderCtx *)userdata;
-  SpanState state = {type, 0};
+  SpanState state = {type, 0, NULL};
   gboolean capture_cell = (ctx && ctx->table_cell_text);
 
   g_array_append_val(ctx->span_stack, state);
+
+  if (type == MD_SPAN_A) {
+    MD_SPAN_A_DETAIL *a = detail;
+    gchar *href = attr_to_string(a ? &a->href : NULL);
+    const FootnoteLink *footnote = footnotes_lookup_link(ctx->footnotes, href);
+    g_free(href);
+    if (footnote) {
+      SpanState *span = &g_array_index(ctx->span_stack, SpanState,
+                                       ctx->span_stack->len - 1);
+      span->footnote = footnote;
+      if (!footnote->anchor && footnote->target)
+        join_footnote_backlink(ctx);
+      create_footnote_mark(ctx, footnote->anchor);
+      if (footnote->number) {
+        gchar *label = g_strdup_printf("%u. ", footnote->number);
+        insert_cstr(ctx, label);
+        g_free(label);
+        ctx->footnote_body_start = TRUE;
+        return 0;
+      }
+      if (capture_cell) {
+        if (footnote->target) {
+          gchar *escaped = g_markup_escape_text(footnote->target, -1);
+          g_string_append_printf(ctx->table_cell_text, "<a href=\"%s\">", escaped);
+          g_free(escaped);
+        }
+        g_string_append(ctx->table_cell_text, footnote->superscript
+            ? "<sup><small><span underline=\"none\">" : "<span underline=\"none\">");
+      } else {
+        if (footnote->superscript)
+          push_active_tag_by_name(ctx, TAG_FOOTNOTE_REFERENCE, &span->pushed_tags);
+        if (footnote->target) {
+          GtkTextTag *tag = gtk_text_buffer_create_tag(ctx->buffer, NULL, NULL);
+          g_ptr_array_add(ctx->render_state->link_tags, g_object_ref(tag));
+          g_object_set_data_full(G_OBJECT(tag), VIEWMD_LINK_URL_DATA,
+                                 g_strdup(footnote->target), g_free);
+          push_active_tag_by_name(ctx, TAG_FOOTNOTE_LINK, &span->pushed_tags);
+          push_active_tag(ctx, tag, &span->pushed_tags);
+        }
+      }
+      return 0;
+    }
+  }
 
   if (capture_cell) {
     table_capture_span_enter(ctx, type);
@@ -1385,7 +1484,14 @@ static int on_leave_span(MD_SPANTYPE type, void *detail, void *userdata) {
       }
     }
     if (ctx->table_cell_text) {
-      table_capture_span_leave(ctx, state.type);
+      if (state.footnote) {
+        g_string_append(ctx->table_cell_text,
+            state.footnote->superscript ? "</span></small></sup>" : "</span>");
+        if (state.footnote->target)
+          g_string_append(ctx->table_cell_text, "</a>");
+      } else {
+        table_capture_span_leave(ctx, state.type);
+      }
     }
     pop_active_tags(ctx, state.pushed_tags);
     g_array_set_size(ctx->span_stack, ctx->span_stack->len - 1);
@@ -1487,6 +1593,11 @@ void markdown_init_tags(GtkTextBuffer *buffer) {
                              config->h1_color, NULL);
   gtk_text_buffer_create_tag(buffer, TAG_TABLE_SEPARATOR, "family", "Monospace",
                              "foreground", "#5C6370", NULL);
+  /* Defined after heading tags so references stay small inside headings too. */
+  gtk_text_buffer_create_tag(buffer, TAG_FOOTNOTE_REFERENCE, "scale", 0.65,
+                             "rise", 4 * PANGO_SCALE, NULL);
+  gtk_text_buffer_create_tag(buffer, TAG_FOOTNOTE_LINK, "foreground", "#61AFEF",
+                             "underline", PANGO_UNDERLINE_NONE, NULL);
 }
 
 void markdown_update_accent_tags(GtkTextBuffer *buffer) {
@@ -1687,7 +1798,9 @@ void markdown_apply_tags(GtkTextBuffer *buffer, const gchar *source) {
   parser.debug_log = NULL;
   parser.syntax = NULL;
 
-  rc = md_parse(normalized_source, (MD_SIZE)strlen(normalized_source), &parser,
+  ctx.footnotes = footnotes_prepare(normalized_source, parser.flags);
+  const gchar *render_source = footnotes_source(ctx.footnotes);
+  rc = md_parse(render_source, (MD_SIZE)strlen(render_source), &parser,
                 &ctx);
   if (rc != 0) {
     reset_render_state(buffer);
@@ -1715,5 +1828,6 @@ void markdown_apply_tags(GtkTextBuffer *buffer, const gchar *source) {
   g_array_free(ctx.span_stack, TRUE);
   g_array_free(ctx.block_stack, TRUE);
   g_ptr_array_free(ctx.active_tags, TRUE);
+  footnotes_free(ctx.footnotes);
   g_free(normalized_source);
 }

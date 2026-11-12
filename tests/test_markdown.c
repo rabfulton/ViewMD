@@ -1,5 +1,7 @@
 #include "config.h"
 #include "markdown.h"
+#include "footnotes.h"
+#include "md4c/md4c.h"
 #include <string.h>
 
 static GtkTextBuffer *new_buffer(void) {
@@ -342,6 +344,230 @@ static void test_front_matter_setting(void) {
   g_object_unref(buffer);
 }
 
+static const gchar *link_at(GtkTextBuffer *buffer, gint offset) {
+  GtkTextIter at;
+  gtk_text_buffer_get_iter_at_offset(buffer, &at, offset);
+  GSList *tags = gtk_text_iter_get_tags(&at);
+  const gchar *href = NULL;
+  for (GSList *item = tags; item; item = item->next) {
+    const gchar *candidate = g_object_get_data(G_OBJECT(item->data), VIEWMD_LINK_URL_DATA);
+    if (candidate)
+      href = candidate;
+  }
+  g_slist_free(tags);
+  return href;
+}
+
+static void test_footnotes_basic(void) {
+  GtkTextBuffer *buffer = new_buffer();
+  markdown_apply_tags(buffer, "First[^named], again[^named], second[^1].\n\n"
+      "[^1]: Numbered source.\n[^named]: Named **source**.\n");
+  gchar *text = buffer_text(buffer);
+  g_assert_true(g_str_has_prefix(text, "First[1], again[1], second[2]."));
+  g_assert_null(strstr(text, "Footnotes"));
+  g_assert_nonnull(strstr(text, "──────\n\n1. Named source."));
+  g_assert_nonnull(strstr(text, "Named source."));
+  g_assert_nonnull(strstr(text, "Numbered source."));
+  g_assert_true(strstr(text, "Named source.") < strstr(text, "Numbered source."));
+  g_assert_null(strstr(text, "[^"));
+  g_assert_cmpstr(link_at(buffer, 5), ==, "viewmd-footnote:note-1");
+  for (guint i = 1; i <= 2; i++) {
+    gchar *name = g_strdup_printf("viewmd-footnote:ref-1-%u", i);
+    g_assert_nonnull(gtk_text_buffer_get_mark(buffer, name));
+    g_free(name);
+  }
+  g_assert_nonnull(gtk_text_buffer_get_mark(buffer, "viewmd-footnote:note-2"));
+  GtkTextIter at;
+  gtk_text_buffer_get_iter_at_offset(buffer, &at, 5);
+  g_assert_true(gtk_text_iter_has_tag(&at, gtk_text_tag_table_lookup(
+      gtk_text_buffer_get_tag_table(buffer), "footnote_reference")));
+  g_assert_false(gtk_text_iter_has_tag(&at, gtk_text_tag_table_lookup(
+      gtk_text_buffer_get_tag_table(buffer), "link")));
+  g_assert_nonnull(strstr(text, "1. Named source. ↩ ↩"));
+  g_assert_nonnull(strstr(text, "2. Numbered source. ↩"));
+  const gchar *note = strstr(text, "1. Named");
+  gtk_text_buffer_get_iter_at_offset(buffer, &at, g_utf8_pointer_to_offset(text, note));
+  GSList *tags = gtk_text_iter_get_tags(&at);
+  for (GSList *item = tags; item; item = item->next) {
+    gint margin = 0;
+    g_object_get(item->data, "left-margin", &margin, NULL);
+    g_assert_cmpint(margin, ==, 0);
+  }
+  g_slist_free(tags);
+  g_assert_false(gtk_text_iter_has_tag(&at, gtk_text_tag_table_lookup(
+      gtk_text_buffer_get_tag_table(buffer), "list_bullet")));
+  gint underline = -1;
+  gdouble scale = 1;
+  g_object_get(gtk_text_tag_table_lookup(gtk_text_buffer_get_tag_table(buffer),
+      "footnote_link"), "underline", &underline, NULL);
+  g_object_get(gtk_text_tag_table_lookup(gtk_text_buffer_get_tag_table(buffer),
+      "footnote_reference"), "scale", &scale, NULL);
+  g_assert_cmpint(underline, ==, PANGO_UNDERLINE_NONE);
+  g_assert_cmpfloat(scale, <, 0.75);
+  g_free(text);
+  g_object_unref(buffer);
+}
+
+static void assert_no_footnotes(const gchar *source) {
+  FootnoteDocument *document = footnotes_prepare(source, MD_DIALECT_GITHUB);
+  g_assert_cmpstr(footnotes_source(document), ==, source);
+  footnotes_free(document);
+}
+
+static void test_footnotes_code_definitions(void) {
+  const gchar *examples[] = {
+    "```md\n[^fake]: fenced\n```\n\nUse[^fake].\n",
+    "```\n[^fake]: unclosed fence\n\nUse[^fake].\n",
+    "~~~\n[^fake]: unclosed fence",
+    "~~~~\n[^fake]: fenced\n~~~\n[^other]: still fenced\n~~~~\nUse[^fake].\n",
+    "````\n```\n[^fake]: longer fence\n```\n````\nUse[^fake].\n",
+    "    [^fake]: indented\n\nUse[^fake].\n",
+    "\t[^fake]: indented\n\nUse[^fake].\n",
+    "`start\n[^fake]: inline code\nend`\n\nUse[^fake].\n",
+    "``start `\n[^fake]: inline code\nend``\n\nUse[^fake].\n",
+    "- item\n\n  ```\n  [^fake]: list code\n  ```\n\nUse[^fake].\n",
+    "> ```\n> [^fake]: quoted code\n> ```\n\nUse[^fake].\n",
+    "<!--\n[^fake]: comment\n-->\n\nUse[^fake].\n",
+    "<pre>\n[^fake]: HTML code\n</pre>\n\nUse[^fake].\n",
+    "\\[^fake]: escaped definition\n\nUse[^fake].\n",
+    "[^]: empty label\n\nUse[^].\n",
+    "[^two words]: invalid label\n\nUse[^two words].\n"
+  };
+  for (guint i = 0; i < G_N_ELEMENTS(examples); i++) {
+    g_test_message("Definition example %u", i);
+    assert_no_footnotes(examples[i]);
+  }
+}
+
+static void test_footnotes_code_references(void) {
+  const gchar *examples[] = {
+    "`[^n]`", "``code ` [^n]``", "`start\n[^n]\nend`",
+    "```md\n[^n]\n```\n", "~~~\n[^n]\n~~~\n",
+    "````\n```\n[^n]\n```\n````\n", "    [^n]\n", "\t[^n]\n",
+    "- item\n\n  ```\n  [^n]\n  ```\n",
+    "> ```\n> [^n]\n> ```\n", "\\[^n]", "&#91;^n]",
+    "[label[^n]](https://example.com)", "[^n](https://example.com)",
+    "![alt[^n]](image.png)", "[label](https://example.com/[^n])",
+    "<!-- [^n] -->", "<pre>\n[^n]\n</pre>\n"
+  };
+  for (guint i = 0; i < G_N_ELEMENTS(examples); i++) {
+    gchar *source = g_strconcat(examples[i], "\n\nReal[^n].\n\n[^n]: Note.\n", NULL);
+    FootnoteDocument *document = footnotes_prepare(source, MD_DIALECT_GITHUB);
+    g_test_message("Reference example %u", i);
+    g_assert_true(g_str_has_prefix(footnotes_source(document), examples[i]));
+    g_assert_null(strstr(footnotes_source(document), "ref-1-2"));
+    /* Only the real reference creates a superscript link. */
+    guint references = 0;
+    const gchar *at = footnotes_source(document);
+    while ((at = strstr(at, "(viewmd-footnote:"))) {
+      const gchar *end = strchr(++at, ')');
+      g_assert_nonnull(end);
+      gchar *token = g_strndup(at, end - at);
+      const FootnoteLink *link = footnotes_lookup_link(document, token);
+      if (link && link->superscript)
+        references++;
+      g_free(token);
+      at = end + 1;
+    }
+    g_assert_cmpuint(references, ==, 1);
+    footnotes_free(document);
+    g_free(source);
+  }
+}
+
+static void test_footnotes_multiline(void) {
+  GtkTextBuffer *buffer = new_buffer();
+  markdown_apply_tags(buffer, "Read[^long].\n\n"
+      "[^long]: First paragraph.\n    Continued.\n\n"
+      "    Second **paragraph**.\n\n    ```\n    [^literal]: code\n    ```\n\n"
+      "    - A list\n    - Another item\n\nAfter.\n");
+  gchar *text = buffer_text(buffer);
+  g_assert_nonnull(strstr(text, "Read[1]."));
+  g_assert_nonnull(strstr(text, "First paragraph.\nContinued."));
+  g_assert_nonnull(strstr(text, "Second paragraph."));
+  g_assert_nonnull(strstr(text, "[^literal]: code"));
+  g_assert_nonnull(strstr(text, "• A list"));
+  g_assert_nonnull(strstr(text, "──────"));
+  g_assert_true(strstr(text, "After.") < strstr(text, "──────"));
+  g_free(text);
+  g_object_unref(buffer);
+}
+
+static void test_footnotes_missing_and_duplicates(void) {
+  GtkTextBuffer *buffer = new_buffer();
+  markdown_apply_tags(buffer, "Unknown[^missing], known[^a].\n\n"
+      "[^a]: First definition.\n[^a]: Duplicate definition.\n[^unused]: Unused.\n");
+  gchar *text = buffer_text(buffer);
+  g_assert_nonnull(strstr(text, "Unknown[^missing], known[1]."));
+  g_assert_nonnull(strstr(text, "First definition."));
+  g_assert_null(strstr(text, "Duplicate definition."));
+  g_assert_null(strstr(text, "Unused."));
+  g_free(text);
+  g_object_unref(buffer);
+}
+
+static void test_footnotes_reload(void) {
+  GtkTextBuffer *buffer = new_buffer();
+  /* Prime the existing list-layout tag cache before measuring transient tags. */
+  markdown_apply_tags(buffer, "1. List\n");
+  markdown_apply_tags(buffer, "Plain text");
+  gint baseline = gtk_text_tag_table_get_size(gtk_text_buffer_get_tag_table(buffer));
+  for (guint i = 0; i < 20; i++) {
+    markdown_apply_tags(buffer, "A[^a].\n\n[^a]: Note.\n");
+    g_assert_cmpint(gtk_text_tag_table_get_size(gtk_text_buffer_get_tag_table(buffer)),
+                    ==, baseline + 2);
+  }
+  markdown_apply_tags(buffer, "Plain text");
+  g_assert_null(gtk_text_buffer_get_mark(buffer, "viewmd-footnote:note-1"));
+  g_assert_null(gtk_text_buffer_get_mark(buffer, "viewmd-footnote:ref-1-1"));
+  g_assert_null(gtk_text_buffer_get_mark(buffer, "viewmd-anchor-footnotes"));
+  g_assert_cmpint(gtk_text_tag_table_get_size(gtk_text_buffer_get_tag_table(buffer)),
+                  ==, baseline);
+  g_object_unref(buffer);
+}
+
+static void test_footnotes_boundaries(void) {
+  GtkTextBuffer *buffer = new_buffer();
+  markdown_apply_tags(buffer, "A[^a] and B[^a-b_c].\r\n\r\n"
+      "[^a]: First.\r\n[^a-b_c]: Second.\r\n\tTab continuation.\r\n");
+  gchar *text = buffer_text(buffer);
+  g_assert_true(g_str_has_prefix(text, "A[1] and B[2]."));
+  g_assert_nonnull(strstr(text, "Second.\nTab continuation."));
+  g_free(text);
+  markdown_apply_tags(buffer, "A[^é].\n\n[^é]: Unicode label.");
+  text = buffer_text(buffer);
+  g_assert_true(g_str_has_prefix(text, "A[1]."));
+  g_assert_nonnull(strstr(text, "Unicode label."));
+  g_free(text);
+  markdown_apply_tags(buffer, "\\\\[^a] and `unclosed [^a].\n\n[^a]: Note.");
+  text = buffer_text(buffer);
+  g_assert_true(g_str_has_prefix(text, "\\[1] and `unclosed [1]."));
+  g_free(text);
+  markdown_apply_tags(buffer, "A[^a].\n\n[^a]: ```\n    [^literal]\n    ```\n");
+  text = buffer_text(buffer);
+  g_assert_nonnull(strstr(text, "[^literal]\n"));
+  g_assert_null(strstr(text, "```"));
+  g_free(text);
+  markdown_apply_tags(buffer, "[Original](viewmd-footnote:generated-1) A[^a].\n\n"
+                               "[^a]: Note.");
+  g_assert_cmpstr(link_at(buffer, 0), ==, "viewmd-footnote:generated-1");
+  g_object_unref(buffer);
+}
+
+static void test_footnotes_fence_lengths(void) {
+  for (guint length = 3; length <= 10; length++) {
+    gchar *fence = g_strnfill(length, '`');
+    gchar *short_fence = g_strnfill(length - 1, '`');
+    gchar *source = g_strdup_printf("%s\n[^n]: inside fence\n%s\n"
+        "[^other]: still code\n%s\n\nUse[^n] and [^other].\n",
+        fence, short_fence, fence);
+    assert_no_footnotes(source);
+    g_free(source);
+    g_free(short_fence);
+    g_free(fence);
+  }
+}
+
 int main(int argc, char **argv) {
   g_test_init(&argc, &argv, NULL);
   gtk_init_check(&argc, &argv);
@@ -373,6 +599,14 @@ int main(int argc, char **argv) {
   g_test_add_func("/markdown/front-matter/code", test_front_matter_in_code);
   g_test_add_func("/markdown/front-matter/reload", test_front_matter_reload);
   g_test_add_func("/markdown/front-matter/setting", test_front_matter_setting);
+  g_test_add_func("/markdown/footnotes/basic", test_footnotes_basic);
+  g_test_add_func("/markdown/footnotes/code-definitions", test_footnotes_code_definitions);
+  g_test_add_func("/markdown/footnotes/code-references", test_footnotes_code_references);
+  g_test_add_func("/markdown/footnotes/multiline", test_footnotes_multiline);
+  g_test_add_func("/markdown/footnotes/missing-and-duplicates", test_footnotes_missing_and_duplicates);
+  g_test_add_func("/markdown/footnotes/reload", test_footnotes_reload);
+  g_test_add_func("/markdown/footnotes/boundaries", test_footnotes_boundaries);
+  g_test_add_func("/markdown/footnotes/fence-lengths", test_footnotes_fence_lengths);
   gint result = g_test_run();
   config_free(config);
   return result;

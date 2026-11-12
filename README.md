@@ -32,6 +32,7 @@ A lightweight GTK 3 markdown viewer for desktop Linux. It is ideal as your defau
 | `~~strike~~` | Strikethrough |
 | `\| table \| row \|` | Markdown tables |
 | `---` | Horizontal rule |
+| `[^note]` and `[^note]: Text` | Numbered footnotes with return links |
 
 Code blocks currently support a beta version of keyword highlighting for fenced languages `c`, `java`, and `python`.
 
@@ -42,6 +43,15 @@ the first line (optionally after a UTF-8 BOM) and close with `---` or `...` on
 its own line. Unclosed blocks and delimiters later in the document are rendered
 as ordinary Markdown. A pair of `---` delimiters at the start is interpreted as
 front matter; use `***` for a leading horizontal rule when that would be ambiguous.
+
+Footnote definitions may appear anywhere at the top level of the document.
+References are numbered by first use, and the notes appear below a horizontal
+rule at the end with a return link for each occurrence. Indent continuation
+lines and additional paragraphs by four spaces or one tab. Names are case-sensitive
+and cannot contain whitespace, brackets, or backslashes. The first definition of a name wins;
+unreferenced definitions are omitted, and undefined references remain literal.
+Markers in code, escaped text, links, and image alt text stay literal. Inline
+definitions (`^[text]`) and references inside footnote bodies are not supported.
 
 ## Installation
 

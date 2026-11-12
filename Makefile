@@ -35,8 +35,8 @@ test-ui: $(OBJDIR)/test-watch-ui
 $(OBJDIR)/test-watch-ui: tests/test_watch_ui.c $(filter-out $(OBJDIR)/main.o,$(OBJECTS)) $(SRCDIR)/app.h $(SRCDIR)/editor.h $(SRCDIR)/config.h $(SRCDIR)/window.h
 	$(CC) $(CFLAGS) -I$(SRCDIR) tests/test_watch_ui.c $(filter-out $(OBJDIR)/main.o,$(OBJECTS)) -o $@ $(LDFLAGS)
 
-$(OBJDIR)/test-markdown: tests/test_markdown.c $(OBJDIR)/markdown.o $(OBJDIR)/code_highlight.o $(OBJDIR)/config.o $(OBJDIR)/md4c.o $(SRCDIR)/markdown.h $(SRCDIR)/config.h
-	$(CC) $(CFLAGS) -I$(SRCDIR) tests/test_markdown.c $(OBJDIR)/markdown.o $(OBJDIR)/code_highlight.o $(OBJDIR)/config.o $(OBJDIR)/md4c.o -o $@ $(LDFLAGS)
+$(OBJDIR)/test-markdown: tests/test_markdown.c $(OBJDIR)/markdown.o $(OBJDIR)/footnotes.o $(OBJDIR)/code_highlight.o $(OBJDIR)/config.o $(OBJDIR)/md4c.o $(SRCDIR)/markdown.h $(SRCDIR)/config.h
+	$(CC) $(CFLAGS) -I$(SRCDIR) tests/test_markdown.c $(OBJDIR)/markdown.o $(OBJDIR)/footnotes.o $(OBJDIR)/code_highlight.o $(OBJDIR)/config.o $(OBJDIR)/md4c.o -o $@ $(LDFLAGS)
 
 $(TARGET): $(OBJECTS)
 	$(CC) $(OBJECTS) -o $@ $(LDFLAGS)
@@ -66,7 +66,8 @@ $(OBJDIR)/main.o: $(SRCDIR)/app.h $(SRCDIR)/window.h
 $(OBJDIR)/app.o: $(SRCDIR)/app.h $(SRCDIR)/config.h $(SRCDIR)/window.h $(SRCDIR)/editor.h
 $(OBJDIR)/window.o: $(SRCDIR)/window.h $(SRCDIR)/app.h $(SRCDIR)/editor.h $(SRCDIR)/config.h
 $(OBJDIR)/editor.o: $(SRCDIR)/editor.h $(SRCDIR)/markdown.h $(SRCDIR)/app.h
-$(OBJDIR)/markdown.o: $(SRCDIR)/markdown.h $(SRCDIR)/code_highlight.h $(SRCDIR)/html_entities.h
+$(OBJDIR)/markdown.o: $(SRCDIR)/markdown.h $(SRCDIR)/footnotes.h $(SRCDIR)/config.h $(SRCDIR)/code_highlight.h $(SRCDIR)/html_entities.h
+$(OBJDIR)/footnotes.o: $(SRCDIR)/footnotes.h $(SRCDIR)/md4c/md4c.h
 $(OBJDIR)/code_highlight.o: $(SRCDIR)/code_highlight.h
 $(OBJDIR)/config.o: $(SRCDIR)/config.h
 $(OBJDIR)/md4c.o: $(SRCDIR)/md4c/md4c.h

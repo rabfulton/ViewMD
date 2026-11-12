@@ -37,6 +37,8 @@ gchar *markyd_editor_get_content(MarkydEditor *editor);
 /* Widget access */
 GtkWidget *markyd_editor_get_widget(MarkydEditor *editor);
 void markyd_editor_focus(MarkydEditor *editor);
+/* Follow an internal footnote link; returns FALSE for other URI schemes. */
+gboolean markyd_editor_follow_footnote(MarkydEditor *editor, const gchar *uri);
 
 /* Force a refresh of markdown styling/rendering (e.g., after settings change). */
 void markyd_editor_refresh(MarkydEditor *editor);

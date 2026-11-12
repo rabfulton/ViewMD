@@ -14,6 +14,7 @@ void markdown_update_accent_tags(GtkTextBuffer *buffer);
 
 /* Data key set on per-link metadata tags to store resolved URL/href. */
 #define VIEWMD_LINK_URL_DATA "viewmd-link-url"
+#define VIEWMD_FOOTNOTE_REFERENCE_TAG "footnote_reference"
 
 /* Prefix for named text marks used as internal heading anchors. */
 #define VIEWMD_ANCHOR_MARK_PREFIX "viewmd-anchor-"
@@ -27,6 +28,8 @@ void markdown_update_accent_tags(GtkTextBuffer *buffer);
 /* GObject data keys set on each table cell widget. */
 #define VIEWMD_TABLE_CELL_ROW_DATA "viewmd-table-cell-row"
 #define VIEWMD_TABLE_CELL_COL_DATA "viewmd-table-cell-col"
+/* Footnote reference mark whose location is a table anchor, with cell metadata. */
+#define VIEWMD_FOOTNOTE_TABLE_REF_DATA "viewmd-footnote-table-reference"
 /* CSS classes for table search highlight states. */
 #define VIEWMD_TABLE_CELL_MATCH_CLASS "viewmd-table-cell-match"
 #define VIEWMD_TABLE_CELL_CURRENT_CLASS "viewmd-table-cell-current"

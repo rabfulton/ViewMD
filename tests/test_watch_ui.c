@@ -1,6 +1,7 @@
 #include "app.h"
 #include "config.h"
 #include "editor.h"
+#include "markdown.h"
 #include "window.h"
 #include <glib/gstdio.h>
 #include <string.h>
@@ -183,6 +184,109 @@ static void test_front_matter_settings(Fixture *fixture, gconstpointer unused) {
   g_assert_nonnull(fixture->application->file_monitor);
 }
 
+static GtkWidget *find_footnote_label(GtkWidget *widget) {
+  if (GTK_IS_LABEL(widget) && strstr(gtk_label_get_label(GTK_LABEL(widget)),
+                                    "viewmd-footnote:note-1") &&
+      g_strcmp0(gtk_label_get_text(GTK_LABEL(widget)), "Cell[1] and [^a]") == 0)
+    return widget;
+  if (!GTK_IS_CONTAINER(widget))
+    return NULL;
+  GList *children = gtk_container_get_children(GTK_CONTAINER(widget));
+  GtkWidget *found = NULL;
+  for (GList *item = children; item && !found; item = item->next)
+    found = find_footnote_label(item->data);
+  g_list_free(children);
+  return found;
+}
+
+static void test_footnote_navigation(Fixture *fixture, gconstpointer unused) {
+  (void)unused;
+  MarkydEditor *editor = fixture->application->editor;
+  GString *source = g_string_new("Intro[^a].\n\n| Table |\n|---|\n"
+                                 "| Cell[^a] and `[^a]` |\n");
+  for (guint i = 1; i < 40; i++)
+    g_string_append_printf(source, "| Row %u%s |\n", i, i == 35 ? "[^a]" : "");
+  g_string_append_c(source, '\n');
+  for (guint i = 0; i < 100; i++)
+    g_string_append_printf(source, "Paragraph %u.\n\n", i);
+  g_string_append(source, "[^a]: A **formatted** note.\n");
+  markyd_editor_set_content(editor, source->str);
+  pump(150);
+  GtkWidget *label = find_footnote_label(editor->text_view);
+  g_assert_nonnull(label);
+  g_assert_cmpstr(gtk_label_get_text(GTK_LABEL(label)), ==, "Cell[1] and [^a]");
+  PangoAttrList *attributes = pango_layout_get_attributes(gtk_label_get_layout(GTK_LABEL(label)));
+  PangoAttrIterator *iterator = pango_attr_list_get_iterator(attributes);
+  do {
+    gint start, end;
+    pango_attr_iterator_range(iterator, &start, &end);
+    if (start <= 4 && end > 4) {
+      PangoAttribute *underline = pango_attr_iterator_get(iterator, PANGO_ATTR_UNDERLINE);
+      g_assert_nonnull(underline);
+      g_assert_cmpint(((PangoAttrInt *)underline)->value, ==, PANGO_UNDERLINE_NONE);
+      break;
+    }
+  } while (pango_attr_iterator_next(iterator));
+  pango_attr_iterator_destroy(iterator);
+  gboolean handled = FALSE;
+  g_signal_emit_by_name(label, "activate-link", "viewmd-footnote:note-1", &handled);
+  g_assert_true(handled);
+  pump(150);
+  GtkTextIter at, expected;
+  gtk_text_buffer_get_iter_at_mark(editor->buffer, &at,
+                                  gtk_text_buffer_get_insert(editor->buffer));
+  gtk_text_buffer_get_iter_at_mark(editor->buffer, &expected,
+      gtk_text_buffer_get_mark(editor->buffer, "viewmd-footnote:note-1"));
+  g_assert_cmpint(gtk_text_iter_get_offset(&at), ==, gtk_text_iter_get_offset(&expected));
+  GtkAdjustment *vadj = gtk_scrollable_get_vadjustment(GTK_SCROLLABLE(editor->text_view));
+  g_assert_cmpfloat(gtk_adjustment_get_value(vadj), >, 500);
+  g_assert_true(markyd_editor_follow_footnote(editor, "viewmd-footnote:ref-1-2"));
+  pump(300);
+  gtk_text_buffer_get_iter_at_mark(editor->buffer, &at,
+                                  gtk_text_buffer_get_insert(editor->buffer));
+  gtk_text_buffer_get_iter_at_mark(editor->buffer, &expected,
+      gtk_text_buffer_get_mark(editor->buffer, "viewmd-footnote:ref-1-2"));
+  g_assert_cmpint(gtk_text_iter_get_offset(&at), ==, gtk_text_iter_get_offset(&expected));
+  g_assert_cmpfloat(gtk_adjustment_get_value(vadj), <, 200);
+  g_assert_true(markyd_editor_follow_footnote(editor, "viewmd-footnote:ref-1-3"));
+  pump(300);
+  g_assert_cmpfloat(gtk_adjustment_get_value(vadj), >, 500);
+  g_assert_cmpfloat(gtk_adjustment_get_value(vadj), <, 2000);
+  /* Hidden table search text must contain display text, not markup or URIs. */
+  GtkTextIter start, end;
+  gtk_text_buffer_get_bounds(editor->buffer, &start, &end);
+  gchar *text = gtk_text_buffer_get_text(editor->buffer, &start, &end, TRUE);
+  g_assert_nonnull(strstr(text, "Cell[1] and [^a]"));
+  g_assert_null(strstr(text, "<a href"));
+  g_assert_null(strstr(text, "viewmd-footnote:"));
+  g_assert_cmpstr(editor->source_content, ==, source->str);
+  g_free(text);
+  g_string_free(source, TRUE);
+}
+
+static void test_footnote_superscript_zoom(Fixture *fixture, gconstpointer unused) {
+  (void)unused;
+  MarkydEditor *editor = fixture->application->editor;
+  markyd_editor_set_content(editor, "Text[^source].\n\n[^source]: Note.\n");
+  pump(50);
+  GtkTextTag *tag = gtk_text_tag_table_lookup(
+      gtk_text_buffer_get_tag_table(editor->buffer), VIEWMD_FOOTNOTE_REFERENCE_TAG);
+  gint small_rise, large_rise;
+  config->font_size = 12;
+  markyd_window_apply_css(fixture->application->window);
+  pump(50);
+  g_object_get(tag, "rise", &small_rise, NULL);
+  config->font_size = 24;
+  markyd_window_apply_css(fixture->application->window);
+  pump(50);
+  g_object_get(tag, "rise", &large_rise, NULL);
+  g_assert_cmpint(small_rise, >, 0);
+  g_assert_cmpint(large_rise, >, small_rise * 1.5);
+  GtkTextIter at;
+  gtk_text_buffer_get_iter_at_offset(editor->buffer, &at, 4);
+  g_assert_true(gtk_text_iter_has_tag(&at, tag));
+}
+
 static void test_pending_restore_cleanup(Fixture *fixture, gconstpointer unused) {
   (void)unused;
   MarkydEditor *editor = fixture->application->editor;
@@ -212,6 +316,8 @@ int main(int argc, char **argv) {
   ADD_TEST("scroll-position", test_scroll_position);
   ADD_TEST("settings-apply-cancel", test_settings);
   ADD_TEST("front-matter-settings", test_front_matter_settings);
+  ADD_TEST("footnote-navigation", test_footnote_navigation);
+  ADD_TEST("footnote-superscript-zoom", test_footnote_superscript_zoom);
   ADD_TEST("pending-restore-cleanup", test_pending_restore_cleanup);
   gint result = g_test_run();
   g_object_unref(test_application);
